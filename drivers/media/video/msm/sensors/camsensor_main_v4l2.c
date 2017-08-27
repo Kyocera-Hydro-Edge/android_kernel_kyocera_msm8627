@@ -1,0 +1,6069 @@
+/* Copyright (c) 2011-2012, Code Aurora Forum. All rights reserved.
+ *
+ * This software is contributed or developed by KYOCERA Corporation.
+ * (C) 2013 KYOCERA Corporation
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 and
+ * only version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ */
+#include <linux/vmalloc.h>
+#include <media/custmcam.h>
+#include <mach/kc_board.h>
+#include <linux/jiffies.h>
+#include "msm_sensor.h"
+#include "msm.h"
+#include "camera_flash.h"
+
+#define SENSOR_NAME "camsensor_main"
+#define PLATFORM_DRIVER_NAME "camsensor_main"
+
+#define FEATURE_KYOCERA_MCAM_BB_ADJ
+#undef FEATURE_KYOCERA_MCAM_BB_ADJ
+
+#define SEQ_LOG_SWITCH
+#undef SEQ_LOG_SWITCH
+#ifdef SEQ_LOG_SWITCH
+#define SEQ_LOG(fmt, args...) printk(KERN_INFO fmt, ##args)
+#else
+#define SEQ_LOG(fmt, args...) do{ } while(0)
+#endif
+
+#define ERR_LOG_SWITCH
+
+#ifdef ERR_LOG_SWITCH
+#define ERR_LOG(fmt, args...) printk(KERN_ERR fmt, ##args)
+#else
+#define ERR_LOG(fmt, args...) do{ } while(0)
+#endif
+
+#define API_LOG_SWITCH
+#undef API_LOG_SWITCH
+#ifdef API_LOG_SWITCH
+#define API_LOG(fmt, args...) printk(KERN_INFO fmt, ##args)
+#else
+#define API_LOG(fmt, args...) do{ } while(0)
+#endif
+
+#define DBG_LOG_SWITCH
+#undef DBG_LOG_SWITCH
+#ifdef DBG_LOG_SWITCH
+#define DBG_LOG(fmt, args...) printk(KERN_NOTICE fmt, ##args)
+#else
+#define DBG_LOG(fmt, args...) do{ } while(0)
+#endif
+
+static struct clk *camio_cam_clk;
+static struct msm_cam_clk_info cam_clk_info[] = {
+	{"cam_clk", 24000000},
+};
+
+DEFINE_MUTEX(camsensor_main_mut);
+
+#define REG_READ_PAGE           0x002C
+#define REG_READ_ADDR           0x002E
+#define REG_WRITE_PAGE          0x0028
+#define REG_WRITE_ADDR          0x002A
+#define REG_INDIRECT_DATA       0x0F12
+
+#define FLASH_THRESHOLD_VALUE   0x0021
+
+#define ROI_AE_FACE_WEIGHT (0x0005)
+#define ROI_AE_OTHER_WEIGHT (0x0001)
+#define ROI_AE_RUN_ON (TRUE)
+#define ROI_AE_RUN_OFF (FALSE)
+#define ROI_AE_RUN_INIT_VAL ROI_AE_RUN_ON
+
+#ifdef FEATURE_KYOCERA_MCAM_BB_ADJ
+
+#define ADJ_LOG_SWITCH
+
+#ifdef ADJ_LOG_SWITCH
+#define ADJ_LOG(fmt, args...) printk(KERN_NOTICE fmt, ##args)
+#else
+#define ADJ_LOG(fmt, args...) do{ } while(0)
+#endif
+
+#define CAMADJ_FLAG_NONE              0x00000000
+#define CAMADJ_FLAG_INIT              0x00000001
+#define CAMADJ_FLAG_ISO_100           0x00000010
+#define CAMADJ_FLAG_ISO_200           0x00000020
+#define CAMADJ_FLAG_ISO_400           0x00000040
+#define CAMADJ_FLAG_ISO_800           0x00000080
+#define CAMADJ_FLAG_WB_DayLight       0x00000100
+#define CAMADJ_FLAG_WB_Cloudy         0x00000200
+#define CAMADJ_FLAG_WB_Incandescent   0x00000400
+#define CAMADJ_FLAG_WB_Fluorescent    0x00000800
+#define CAMADJ_FLAG_SC_Portrait       0x00010000
+#define CAMADJ_FLAG_SC_Landscape      0x00020000
+#define CAMADJ_FLAG_SC_NightPortrait  0x00040000
+#define CAMADJ_FLAG_SC_NightLandscape 0x00080000
+#define CAMADJ_FLAG_SC_Action         0x00100000
+#define CAMADJ_FLAG_FILE_END          0xFFFFFFFF
+
+static uint32_t camadjust_flag = CAMADJ_FLAG_NONE;
+static struct msm_camera_i2c_conf_array camadjust_init_conf[]              = { {NULL,0, 0, MSM_CAMERA_I2C_WORD_DATA} };
+static struct msm_camera_i2c_conf_array camadjust_ISO_100_conf[]           = { {NULL,0, 0, MSM_CAMERA_I2C_WORD_DATA} };
+static struct msm_camera_i2c_conf_array camadjust_ISO_200_conf[]           = { {NULL,0, 0, MSM_CAMERA_I2C_WORD_DATA} };
+static struct msm_camera_i2c_conf_array camadjust_ISO_400_conf[]           = { {NULL,0, 0, MSM_CAMERA_I2C_WORD_DATA} };
+static struct msm_camera_i2c_conf_array camadjust_ISO_800_conf[]           = { {NULL,0, 0, MSM_CAMERA_I2C_WORD_DATA} };
+static struct msm_camera_i2c_conf_array camadjust_WB_DayLight_conf[]       = { {NULL,0, 0, MSM_CAMERA_I2C_WORD_DATA} };
+static struct msm_camera_i2c_conf_array camadjust_WB_Cloudy_conf[]         = { {NULL,0, 0, MSM_CAMERA_I2C_WORD_DATA} };
+static struct msm_camera_i2c_conf_array camadjust_WB_Incandescent_conf[]   = { {NULL,0, 0, MSM_CAMERA_I2C_WORD_DATA} };
+static struct msm_camera_i2c_conf_array camadjust_WB_Fluorescent_conf[]    = { {NULL,0, 0, MSM_CAMERA_I2C_WORD_DATA} };
+static struct msm_camera_i2c_conf_array camadjust_SC_Portrait_conf[]       = { {NULL,0, 0, MSM_CAMERA_I2C_WORD_DATA} };
+static struct msm_camera_i2c_conf_array camadjust_SC_Landscape_conf[]      = { {NULL,0, 0, MSM_CAMERA_I2C_WORD_DATA} };
+static struct msm_camera_i2c_conf_array camadjust_SC_NightPortrait_conf[]  = { {NULL,0, 0, MSM_CAMERA_I2C_WORD_DATA} };
+static struct msm_camera_i2c_conf_array camadjust_SC_NightLandscape_conf[] = { {NULL,0, 0, MSM_CAMERA_I2C_WORD_DATA} };
+static struct msm_camera_i2c_conf_array camadjust_SC_Action_conf[]         = { {NULL,0, 0, MSM_CAMERA_I2C_WORD_DATA} };
+static void camsensor_main_read_adjust_file( void );
+#endif
+
+struct camsensor_main_hdr_ctrl {
+    uint32_t max_exp_val;
+    uint32_t base_gain_val;
+    uint32_t lei_exp_val;
+    uint16_t autoalg_bit;
+    bool     manual_exp_start_flag;
+};
+
+struct camsensor_main_drv_ctrl {
+    uint8_t  iso_mode;
+    uint8_t  ae_mode;
+    uint8_t  wb_mode;
+    uint8_t  scene_mode;
+    uint8_t  focus_mode;
+};
+
+static struct camsensor_main_drv_ctrl *camsensor_main_drv_ctrl;
+
+static struct camsensor_main_hdr_ctrl camsensor_main_hdr_ctrl_data;
+
+static uint16_t camsensor_main_face_weight;
+static uint16_t camsensor_main_other_weight;
+static uint16_t camsensor_main_ae_run_switch;
+static uint64_t camsensor_main_ae_map;
+
+static int af_work_timeout;
+static bool work_enabled = false;
+static void camsensor_main_af_worker(struct work_struct *work);
+static DECLARE_DELAYED_WORK(camsensor_main_af_work, camsensor_main_af_worker);
+
+typedef enum {
+    AF_SEARCH_PREV_FIRST_CHECK,
+    AF_SEARCH_DURING_FIRST_CHECK,
+    AF_SEARCH_DURING_SECOND_CHECK,
+    AF_SEARCH_DONE,
+    AF_SEARCH_CANCEL,
+    MAX_AF_SEARCH,
+}camsensor_main_af_search_status_t;
+
+camsensor_main_af_search_status_t af_search_status = AF_SEARCH_PREV_FIRST_CHECK;
+
+static struct msm_sensor_ctrl_t camsensor_main_s_ctrl;
+
+static uint8_t uc_is_power_on = false;
+
+static struct msm_camera_i2c_reg_conf camsensor_main_start_settings[] = {
+{0x0028,0x2000},
+{0x002A,0x027A},
+{0x0F12,0x0001},
+{0x002A,0x027E},
+{0x0F12,0x0001},
+};
+
+static struct msm_camera_i2c_reg_conf camsensor_main_stop_settings[] = {
+{0x0028,0x2000},
+{0x002A,0x0278},
+{0x0F12,0x0000},
+{0x0F12,0x0001},
+{0x002A,0x027C},
+{0x0F12,0x0000},
+{0x0F12,0x0001},
+};
+
+static struct msm_camera_i2c_reg_conf camsensor_main_groupon_settings[] = {
+};
+
+static struct msm_camera_i2c_reg_conf camsensor_main_groupoff_settings[] = {
+};
+
+static struct msm_camera_i2c_reg_conf camsensor_main_header_settings[] = {
+{0xFCFC,0xD000},
+{0x0010,0x0001},
+{0x1030,0x0000},
+{0x0014,0x0001},
+};
+
+static struct msm_camera_i2c_reg_conf camsensor_main_prev_settings[] = {
+{0x0028,0x2000},
+{0x002A,0x0278},
+{0x0F12,0x0001},
+{0x002A,0x027C},
+{0x0F12,0x0000},
+};
+
+static struct msm_camera_i2c_reg_conf camsensor_main_still_settings[] = {
+{0x0028,0x2000},
+{0x002A,0x0278},
+{0x0F12,0x0000},
+{0x002A,0x027C},
+{0x0F12,0x0001},
+};
+
+static struct msm_camera_i2c_reg_conf camsensor_main_recommend_settings[] = {
+{0x0028,0x2000},
+{0x002A,0x31E4},
+{0x0F12,0xB570},
+{0x0F12,0x4E15},
+{0x0F12,0x253F},
+{0x0F12,0x4C15},
+{0x0F12,0x2000},
+{0x0F12,0xF000},
+{0x0F12,0xFA41},
+{0x0F12,0x6266},
+{0x0F12,0x62A5},
+{0x0F12,0x4C14},
+{0x0F12,0x4812},
+{0x0F12,0x63E0},
+{0x0F12,0x4814},
+{0x0F12,0x4913},
+{0x0F12,0x6101},
+{0x0F12,0x4914},
+{0x0F12,0x4814},
+{0x0F12,0xF000},
+{0x0F12,0xFA3B},
+{0x0F12,0x4914},
+{0x0F12,0x4814},
+{0x0F12,0xF000},
+{0x0F12,0xFA37},
+{0x0F12,0x4914},
+{0x0F12,0x4814},
+{0x0F12,0xF000},
+{0x0F12,0xFA33},
+{0x0F12,0x4914},
+{0x0F12,0x2000},
+{0x0F12,0x8008},
+{0x0F12,0x4913},
+{0x0F12,0x4814},
+{0x0F12,0xF000},
+{0x0F12,0xFA2C},
+{0x0F12,0x4910},
+{0x0F12,0x1D09},
+{0x0F12,0x6008},
+{0x0F12,0x4620},
+{0x0F12,0x4911},
+{0x0F12,0x3080},
+{0x0F12,0x6141},
+{0x0F12,0x4811},
+{0x0F12,0x67E0},
+{0x0F12,0xBD70},
+{0x0F12,0x0137},
+{0x0F12,0x5EA1},
+{0x0F12,0x2F34},
+{0x0F12,0x2000},
+{0x0F12,0x3289},
+{0x0F12,0x2000},
+{0x0F12,0x0008},
+{0x0F12,0x2000},
+{0x0F12,0x32EF},
+{0x0F12,0x2000},
+{0x0F12,0x0148},
+{0x0F12,0x2000},
+{0x0F12,0x3393},
+{0x0F12,0x2000},
+{0x0F12,0x5361},
+{0x0F12,0x0000},
+{0x0F12,0x33B3},
+{0x0F12,0x2000},
+{0x0F12,0xCCC1},
+{0x0F12,0x0000},
+{0x0F12,0x34B5},
+{0x0F12,0x2000},
+{0x0F12,0x67D7},
+{0x0F12,0x0000},
+{0x0F12,0x3748},
+{0x0F12,0x2000},
+{0x0F12,0x3511},
+{0x0F12,0x2000},
+{0x0F12,0x745B},
+{0x0F12,0x0000},
+{0x0F12,0x35C3},
+{0x0F12,0x2000},
+{0x0F12,0x35FF},
+{0x0F12,0x2000},
+{0x0F12,0xBA40},
+{0x0F12,0x4770},
+{0x0F12,0xBAC0},
+{0x0F12,0x4770},
+{0x0F12,0xB570},
+{0x0F12,0x48E7},
+{0x0F12,0x8C00},
+{0x0F12,0x07C0},
+{0x0F12,0xD028},
+{0x0F12,0x49E6},
+{0x0F12,0x8848},
+{0x0F12,0x8809},
+{0x0F12,0x0400},
+{0x0F12,0x4308},
+{0x0F12,0x4CE4},
+{0x0F12,0x8A25},
+{0x0F12,0x4AE4},
+{0x0F12,0x2101},
+{0x0F12,0x8151},
+{0x0F12,0x4621},
+{0x0F12,0x3920},
+{0x0F12,0x6989},
+{0x0F12,0x233D},
+{0x0F12,0x5C5E},
+{0x0F12,0x4BE1},
+{0x0F12,0x2E00},
+{0x0F12,0xD005},
+{0x0F12,0x3140},
+{0x0F12,0x8B89},
+{0x0F12,0x2902},
+{0x0F12,0xD015},
+{0x0F12,0x2100},
+{0x0F12,0x8219},
+{0x0F12,0x4EDD},
+{0x0F12,0x2100},
+{0x0F12,0x3620},
+{0x0F12,0x8031},
+{0x0F12,0x03C6},
+{0x0F12,0x0C36},
+{0x0F12,0x825E},
+{0x0F12,0x8151},
+{0x0F12,0x2106},
+{0x0F12,0xF000},
+{0x0F12,0xF9DA},
+{0x0F12,0x8220},
+{0x0F12,0x207D},
+{0x0F12,0x0180},
+{0x0F12,0xF000},
+{0x0F12,0xF9DB},
+{0x0F12,0x8225},
+{0x0F12,0xF000},
+{0x0F12,0xF9DE},
+{0x0F12,0xBD70},
+{0x0F12,0x2101},
+{0x0F12,0xE7E8},
+{0x0F12,0xB5F8},
+{0x0F12,0x49D2},
+{0x0F12,0x880A},
+{0x0F12,0x2A00},
+{0x0F12,0xD114},
+{0x0F12,0x4DCE},
+{0x0F12,0x89AA},
+{0x0F12,0x2A00},
+{0x0F12,0xD010},
+{0x0F12,0x2700},
+{0x0F12,0x2800},
+{0x0F12,0xD00E},
+{0x0F12,0x8848},
+{0x0F12,0xF000},
+{0x0F12,0xF9C6},
+{0x0F12,0x48CA},
+{0x0F12,0x3020},
+{0x0F12,0x8007},
+{0x0F12,0x200A},
+{0x0F12,0xF000},
+{0x0F12,0xF9C0},
+{0x0F12,0x2001},
+{0x0F12,0x8168},
+{0x0F12,0x200A},
+{0x0F12,0xF000},
+{0x0F12,0xF9BB},
+{0x0F12,0xBDF8},
+{0x0F12,0x48C1},
+{0x0F12,0x8841},
+{0x0F12,0x8800},
+{0x0F12,0x0409},
+{0x0F12,0x4301},
+{0x0F12,0x0348},
+{0x0F12,0x0C00},
+{0x0F12,0x4CBF},
+{0x0F12,0x8A26},
+{0x0F12,0x49C0},
+{0x0F12,0x8248},
+{0x0F12,0x816F},
+{0x0F12,0x4ABE},
+{0x0F12,0x2101},
+{0x0F12,0x3220},
+{0x0F12,0x8011},
+{0x0F12,0x8220},
+{0x0F12,0x207D},
+{0x0F12,0x00C0},
+{0x0F12,0xF000},
+{0x0F12,0xF9A5},
+{0x0F12,0x8226},
+{0x0F12,0xBDF8},
+{0x0F12,0xB570},
+{0x0F12,0x4605},
+{0x0F12,0x4CBA},
+{0x0F12,0x8820},
+{0x0F12,0x2800},
+{0x0F12,0xD10E},
+{0x0F12,0x48B9},
+{0x0F12,0x2108},
+{0x0F12,0x8041},
+{0x0F12,0x2601},
+{0x0F12,0x8006},
+{0x0F12,0xF000},
+{0x0F12,0xF9A2},
+{0x0F12,0x48B0},
+{0x0F12,0x49B6},
+{0x0F12,0x8201},
+{0x0F12,0x48B6},
+{0x0F12,0x8BC0},
+{0x0F12,0xF000},
+{0x0F12,0xF98F},
+{0x0F12,0x8026},
+{0x0F12,0x48B1},
+{0x0F12,0x3040},
+{0x0F12,0x8880},
+{0x0F12,0x2D00},
+{0x0F12,0xD002},
+{0x0F12,0x2102},
+{0x0F12,0x4008},
+{0x0F12,0xBD70},
+{0x0F12,0x07C0},
+{0x0F12,0x0FC0},
+{0x0F12,0xBD70},
+{0x0F12,0xB570},
+{0x0F12,0x4CAB},
+{0x0F12,0x3460},
+{0x0F12,0x8A25},
+{0x0F12,0x2004},
+{0x0F12,0x4385},
+{0x0F12,0x2000},
+{0x0F12,0xF7FF},
+{0x0F12,0xFFD7},
+{0x0F12,0x0080},
+{0x0F12,0x4328},
+{0x0F12,0x8220},
+{0x0F12,0x2021},
+{0x0F12,0x0200},
+{0x0F12,0x8060},
+{0x0F12,0xBD70},
+{0x0F12,0xB5F8},
+{0x0F12,0x2001},
+{0x0F12,0xF7FF},
+{0x0F12,0xFFCC},
+{0x0F12,0x4CA4},
+{0x0F12,0x2101},
+{0x0F12,0x3420},
+{0x0F12,0x2802},
+{0x0F12,0xD01C},
+{0x0F12,0x2000},
+{0x0F12,0x81A0},
+{0x0F12,0x489E},
+{0x0F12,0x89A2},
+{0x0F12,0x8042},
+{0x0F12,0x2101},
+{0x0F12,0x8001},
+{0x0F12,0x4F9E},
+{0x0F12,0x8BF8},
+{0x0F12,0xF000},
+{0x0F12,0xF95F},
+{0x0F12,0x4E9A},
+{0x0F12,0x3620},
+{0x0F12,0x8A71},
+{0x0F12,0x489B},
+{0x0F12,0x4D9C},
+{0x0F12,0x2900},
+{0x0F12,0xD002},
+{0x0F12,0x8902},
+{0x0F12,0x2A00},
+{0x0F12,0xD009},
+{0x0F12,0x2101},
+{0x0F12,0x03C9},
+{0x0F12,0x8069},
+{0x0F12,0x80E9},
+{0x0F12,0x2100},
+{0x0F12,0x80A9},
+{0x0F12,0x8129},
+{0x0F12,0xE01E},
+{0x0F12,0x81A1},
+{0x0F12,0xE7E2},
+{0x0F12,0x8069},
+{0x0F12,0x8AB1},
+{0x0F12,0x80E9},
+{0x0F12,0x8AF1},
+{0x0F12,0xB209},
+{0x0F12,0x80A9},
+{0x0F12,0x8B32},
+{0x0F12,0xB212},
+{0x0F12,0x812A},
+{0x0F12,0x8B73},
+{0x0F12,0x469C},
+{0x0F12,0x8BB3},
+{0x0F12,0x469E},
+{0x0F12,0x4663},
+{0x0F12,0x2B00},
+{0x0F12,0xD104},
+{0x0F12,0x17CB},
+{0x0F12,0x0F5B},
+{0x0F12,0x1859},
+{0x0F12,0x10C9},
+{0x0F12,0x80A9},
+{0x0F12,0x4671},
+{0x0F12,0x2900},
+{0x0F12,0xD104},
+{0x0F12,0x17D1},
+{0x0F12,0x0F49},
+{0x0F12,0x1889},
+{0x0F12,0x10C9},
+{0x0F12,0x8129},
+{0x0F12,0x8940},
+{0x0F12,0x2800},
+{0x0F12,0xD006},
+{0x0F12,0x2001},
+{0x0F12,0x0280},
+{0x0F12,0x81A8},
+{0x0F12,0x8168},
+{0x0F12,0x8228},
+{0x0F12,0x81E8},
+{0x0F12,0xBDF8},
+{0x0F12,0x2001},
+{0x0F12,0x81A0},
+{0x0F12,0x497B},
+{0x0F12,0x8048},
+{0x0F12,0x8008},
+{0x0F12,0x8BF8},
+{0x0F12,0xF000},
+{0x0F12,0xF91C},
+{0x0F12,0x8BF0},
+{0x0F12,0x2800},
+{0x0F12,0xD009},
+{0x0F12,0x81A8},
+{0x0F12,0x4876},
+{0x0F12,0x3040},
+{0x0F12,0x8801},
+{0x0F12,0x8169},
+{0x0F12,0x8841},
+{0x0F12,0x8229},
+{0x0F12,0x8880},
+{0x0F12,0x81E8},
+{0x0F12,0xBDF8},
+{0x0F12,0x2000},
+{0x0F12,0x81A0},
+{0x0F12,0x4971},
+{0x0F12,0x8048},
+{0x0F12,0x2001},
+{0x0F12,0x8008},
+{0x0F12,0x8BF8},
+{0x0F12,0xF000},
+{0x0F12,0xF906},
+{0x0F12,0x8BF0},
+{0x0F12,0x2800},
+{0x0F12,0xD009},
+{0x0F12,0x81A8},
+{0x0F12,0x486B},
+{0x0F12,0x3040},
+{0x0F12,0x8801},
+{0x0F12,0x8169},
+{0x0F12,0x8841},
+{0x0F12,0x8229},
+{0x0F12,0x8880},
+{0x0F12,0x81E8},
+{0x0F12,0xBDF8},
+{0x0F12,0x2001},
+{0x0F12,0x0280},
+{0x0F12,0x81A8},
+{0x0F12,0x8168},
+{0x0F12,0x8228},
+{0x0F12,0x81E8},
+{0x0F12,0xBDF8},
+{0x0F12,0xB5F3},
+{0x0F12,0xB091},
+{0x0F12,0x4607},
+{0x0F12,0x2220},
+{0x0F12,0x4966},
+{0x0F12,0xA809},
+{0x0F12,0xF000},
+{0x0F12,0xF8FC},
+{0x0F12,0x2220},
+{0x0F12,0x4964},
+{0x0F12,0x3120},
+{0x0F12,0xA801},
+{0x0F12,0xF000},
+{0x0F12,0xF8F6},
+{0x0F12,0x2400},
+{0x0F12,0x4E62},
+{0x0F12,0x00A0},
+{0x0F12,0xAA01},
+{0x0F12,0x5E11},
+{0x0F12,0x1883},
+{0x0F12,0x2202},
+{0x0F12,0x5E9A},
+{0x0F12,0x9B12},
+{0x0F12,0x4379},
+{0x0F12,0x435A},
+{0x0F12,0x1889},
+{0x0F12,0x17CA},
+{0x0F12,0x0E92},
+{0x0F12,0x1851},
+{0x0F12,0x1189},
+{0x0F12,0xAA09},
+{0x0F12,0x5A13},
+{0x0F12,0x199D},
+{0x0F12,0x1880},
+{0x0F12,0x8842},
+{0x0F12,0x7828},
+{0x0F12,0x1840},
+{0x0F12,0x2100},
+{0x0F12,0xF000},
+{0x0F12,0xF8E2},
+{0x0F12,0x7028},
+{0x0F12,0x1C64},
+{0x0F12,0x2C08},
+{0x0F12,0xD3E3},
+{0x0F12,0xB013},
+{0x0F12,0xBDF0},
+{0x0F12,0xB5F3},
+{0x0F12,0xB081},
+{0x0F12,0x4C4A},
+{0x0F12,0x4A52},
+{0x0F12,0x1D24},
+{0x0F12,0x6820},
+{0x0F12,0x2701},
+{0x0F12,0x0901},
+{0x0F12,0x0049},
+{0x0F12,0x0705},
+{0x0F12,0x5A53},
+{0x0F12,0x0F2D},
+{0x0F12,0x4638},
+{0x0F12,0x40A8},
+{0x0F12,0x4383},
+{0x0F12,0x5253},
+{0x0F12,0x483D},
+{0x0F12,0x78C0},
+{0x0F12,0x2800},
+{0x0F12,0xD032},
+{0x0F12,0x484A},
+{0x0F12,0x4D4B},
+{0x0F12,0x8D81},
+{0x0F12,0x2900},
+{0x0F12,0xD025},
+{0x0F12,0x88A0},
+{0x0F12,0x2800},
+{0x0F12,0xD122},
+{0x0F12,0x4A46},
+{0x0F12,0x6DA8},
+{0x0F12,0x8DD2},
+{0x0F12,0x0C03},
+{0x0F12,0xD006},
+{0x0F12,0x0A03},
+{0x0F12,0x4359},
+{0x0F12,0x60A1},
+{0x0F12,0x60E0},
+{0x0F12,0x4353},
+{0x0F12,0x6123},
+{0x0F12,0xE006},
+{0x0F12,0x4341},
+{0x0F12,0x0A09},
+{0x0F12,0x60A1},
+{0x0F12,0x60E0},
+{0x0F12,0x4350},
+{0x0F12,0x0A00},
+{0x0F12,0x6120},
+{0x0F12,0x6920},
+{0x0F12,0x65A8},
+{0x0F12,0x4933},
+{0x0F12,0x9801},
+{0x0F12,0x3128},
+{0x0F12,0xF000},
+{0x0F12,0xF8AC},
+{0x0F12,0x4629},
+{0x0F12,0x3158},
+{0x0F12,0xC94E},
+{0x0F12,0x482F},
+{0x0F12,0x3018},
+{0x0F12,0xC04E},
+{0x0F12,0x68E0},
+{0x0F12,0x65A8},
+{0x0F12,0x80A7},
+{0x0F12,0x88A0},
+{0x0F12,0x2802},
+{0x0F12,0xD106},
+{0x0F12,0x68A0},
+{0x0F12,0x65A8},
+{0x0F12,0x2003},
+{0x0F12,0x80A0},
+{0x0F12,0xE001},
+{0x0F12,0x2000},
+{0x0F12,0x80A0},
+{0x0F12,0x9902},
+{0x0F12,0x9801},
+{0x0F12,0xF000},
+{0x0F12,0xF895},
+{0x0F12,0x6820},
+{0x0F12,0x4B2C},
+{0x0F12,0x0901},
+{0x0F12,0x0049},
+{0x0F12,0x0704},
+{0x0F12,0x5A5A},
+{0x0F12,0x0F24},
+{0x0F12,0x4638},
+{0x0F12,0x40A0},
+{0x0F12,0x4302},
+{0x0F12,0x525A},
+{0x0F12,0xBDFE},
+{0x0F12,0xB570},
+{0x0F12,0x2001},
+{0x0F12,0xF000},
+{0x0F12,0xF88B},
+{0x0F12,0x4C1D},
+{0x0F12,0x1D24},
+{0x0F12,0x88A0},
+{0x0F12,0x2801},
+{0x0F12,0xD10F},
+{0x0F12,0x4620},
+{0x0F12,0x3024},
+{0x0F12,0xF000},
+{0x0F12,0xF888},
+{0x0F12,0x1F21},
+{0x0F12,0x4822},
+{0x0F12,0x6A0D},
+{0x0F12,0x69CB},
+{0x0F12,0x698A},
+{0x0F12,0x6A49},
+{0x0F12,0x6605},
+{0x0F12,0x65C3},
+{0x0F12,0x6582},
+{0x0F12,0x6641},
+{0x0F12,0x2002},
+{0x0F12,0x80A0},
+{0x0F12,0x491B},
+{0x0F12,0x8E08},
+{0x0F12,0x1C40},
+{0x0F12,0x8608},
+{0x0F12,0xBD70},
+{0x0F12,0xB570},
+{0x0F12,0x4604},
+{0x0F12,0x4D1A},
+{0x0F12,0x7828},
+{0x0F12,0x4320},
+{0x0F12,0xD00C},
+{0x0F12,0x20C1},
+{0x0F12,0x4622},
+{0x0F12,0x2101},
+{0x0F12,0x0200},
+{0x0F12,0xF000},
+{0x0F12,0xF871},
+{0x0F12,0x2C00},
+{0x0F12,0xD103},
+{0x0F12,0x20FF},
+{0x0F12,0x4914},
+{0x0F12,0x3001},
+{0x0F12,0x8048},
+{0x0F12,0x702C},
+{0x0F12,0xBD70},
+{0x0F12,0x0000},
+{0x0F12,0x2370},
+{0x0F12,0x2000},
+{0x0F12,0x01E4},
+{0x0F12,0x2000},
+{0x0F12,0x2EBC},
+{0x0F12,0x2000},
+{0x0F12,0x0140},
+{0x0F12,0xD000},
+{0x0F12,0xB080},
+{0x0F12,0xD000},
+{0x0F12,0x12CC},
+{0x0F12,0x2000},
+{0x0F12,0x3748},
+{0x0F12,0x2000},
+{0x0F12,0xA000},
+{0x0F12,0xD000},
+{0x0F12,0x0BB8},
+{0x0F12,0x0000},
+{0x0F12,0x0A10},
+{0x0F12,0x2000},
+{0x0F12,0x1224},
+{0x0F12,0x2000},
+{0x0F12,0x2590},
+{0x0F12,0x2000},
+{0x0F12,0x3704},
+{0x0F12,0x2000},
+{0x0F12,0x2242},
+{0x0F12,0x2000},
+{0x0F12,0x1100},
+{0x0F12,0xD000},
+{0x0F12,0x2F34},
+{0x0F12,0x2000},
+{0x0F12,0x2138},
+{0x0F12,0x2000},
+{0x0F12,0x256A},
+{0x0F12,0x2000},
+{0x0F12,0xC100},
+{0x0F12,0xD000},
+{0x0F12,0xB403},
+{0x0F12,0x4801},
+{0x0F12,0x9001},
+{0x0F12,0xBD01},
+{0x0F12,0x0895},
+{0x0F12,0x0001},
+{0x0F12,0xB403},
+{0x0F12,0x4801},
+{0x0F12,0x9001},
+{0x0F12,0xBD01},
+{0x0F12,0x092B},
+{0x0F12,0x0001},
+{0x0F12,0xB403},
+{0x0F12,0x4801},
+{0x0F12,0x9001},
+{0x0F12,0xBD01},
+{0x0F12,0x0DF1},
+{0x0F12,0x0001},
+{0x0F12,0xB403},
+{0x0F12,0x4801},
+{0x0F12,0x9001},
+{0x0F12,0xBD01},
+{0x0F12,0xFCBF},
+{0x0F12,0x0000},
+{0x0F12,0xB403},
+{0x0F12,0x4801},
+{0x0F12,0x9001},
+{0x0F12,0xBD01},
+{0x0F12,0x0895},
+{0x0F12,0x0000},
+{0x0F12,0xB403},
+{0x0F12,0x4801},
+{0x0F12,0x9001},
+{0x0F12,0xBD01},
+{0x0F12,0xFC2D},
+{0x0F12,0x0000},
+{0x0F12,0xB403},
+{0x0F12,0x4801},
+{0x0F12,0x9001},
+{0x0F12,0xBD01},
+{0x0F12,0x0371},
+{0x0F12,0x0000},
+{0x0F12,0xB403},
+{0x0F12,0x4801},
+{0x0F12,0x9001},
+{0x0F12,0xBD01},
+{0x0F12,0x9F27},
+{0x0F12,0x0000},
+{0x0F12,0xB403},
+{0x0F12,0x4801},
+{0x0F12,0x9001},
+{0x0F12,0xBD01},
+{0x0F12,0x745B},
+{0x0F12,0x0000},
+{0x0F12,0xB403},
+{0x0F12,0x4801},
+{0x0F12,0x9001},
+{0x0F12,0xBD01},
+{0x0F12,0x990D},
+{0x0F12,0x0000},
+{0x0F12,0xB403},
+{0x0F12,0x4801},
+{0x0F12,0x9001},
+{0x0F12,0xBD01},
+{0x0F12,0x7447},
+{0x0F12,0x0000},
+{0x0F12,0xB403},
+{0x0F12,0x4801},
+{0x0F12,0x9001},
+{0x0F12,0xBD01},
+{0x0F12,0xA1DD},
+{0x0F12,0x0000},
+{0x0F12,0x0083},
+{0x0F12,0x00FF},
+{0x0F12,0x0084},
+{0x0F12,0x00FF},
+{0x0F12,0x0038},
+{0x0F12,0x007F},
+{0x0F12,0x0039},
+{0x0F12,0x007F},
+{0x0F12,0x003A},
+{0x0F12,0x007F},
+{0x0F12,0x003B},
+{0x0F12,0x007F},
+{0x0F12,0x003C},
+{0x0F12,0x0007},
+{0x0F12,0x003D},
+{0x0F12,0x0007},
+{0x0F12,0x0080},
+{0x0F12,0x0000},
+{0x0F12,0x0080},
+{0x0F12,0x0000},
+{0x0F12,0xFFC0},
+{0x0F12,0x0000},
+{0x0F12,0xFFC0},
+{0x0F12,0x0000},
+{0x0F12,0xFFC0},
+{0x0F12,0x0000},
+{0x0F12,0xFFC0},
+{0x0F12,0x0000},
+{0x0F12,0xFFFC},
+{0x0F12,0x0000},
+{0x0F12,0xFFFC},
+{0x0F12,0x0000},
+{0x0F12,0x003F},
+{0x0F12,0x0000},
+{0x0028,0x2000},
+{0x002A,0x149A},
+{0x0F12,0x0001},
+{0x002A,0x14A2},
+{0x0F12,0x0000},
+{0x002A,0x122C},
+{0x0F12,0x0000},
+{0x002A,0x0A32},
+{0x0F12,0x0001},
+{0x002A,0x0A2C},
+{0x0F12,0x0002},
+{0x002A,0x0A2E},
+{0x0F12,0x0100},
+{0x0028,0xD000},
+{0x002A,0x1000},
+{0x0F12,0x0001},
+{0x002A,0xF400},
+{0x0F12,0x443F},
+{0x0F12,0x2020},
+{0x0F12,0x0B0D},
+{0x0F12,0x8008},
+{0x0F12,0x0003},
+{0x0F12,0x0010},
+{0x002A,0xF410},
+{0x0F12,0x5777},
+{0x002A,0xF414},
+{0x0F12,0x0007},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x002A,0xF424},
+{0x0F12,0x5300},
+{0x0F12,0x0209},
+{0x0F12,0x1037},
+{0x0F12,0x0007},
+{0x0F12,0x0081},
+{0x002A,0xF432},
+{0x0F12,0x0508},
+{0x0F12,0x0509},
+{0x0F12,0x08F9},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x1002},
+{0x002A,0xF5B8},
+{0x0F12,0x0010},
+{0x0F12,0x0020},
+{0x0F12,0x0040},
+{0x0F12,0x0050},
+{0x0F12,0x0070},
+{0x0F12,0x0080},
+{0x0F12,0x00A0},
+{0x0F12,0x00B0},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x002F},
+{0x0F12,0x005F},
+{0x0F12,0x005F},
+{0x0F12,0x008F},
+{0x0F12,0x008F},
+{0x0F12,0x00BE},
+{0x002A,0xE502},
+{0x0F12,0x0820},
+{0x0F12,0x0000},
+{0x002A,0xE600},
+{0x0F12,0x0010},
+{0x002A,0xE606},
+{0x0F12,0x0125},
+{0x002A,0xE602},
+{0x0F12,0x0040},
+{0x0F12,0x1FC0},
+{0x002A,0xE61E},
+{0x0F12,0x0000},
+{0x002A,0xE628},
+{0x0F12,0x0000},
+{0x002A,0xE614},
+{0x0F12,0x2010},
+{0x002A,0xE62E},
+{0x0F12,0x0007},
+{0x0F12,0x0000},
+{0x002A,0xF482},
+{0x0F12,0x0613},
+{0x0F12,0x0010},
+{0x0F12,0x0613},
+{0x002A,0xF48A},
+{0x0F12,0x0615},
+{0x002A,0xF48E},
+{0x0F12,0x0617},
+{0x0F12,0x0205},
+{0x0F12,0x0258},
+{0x0F12,0x000F},
+{0x0F12,0x0617},
+{0x0F12,0x0204},
+{0x0F12,0x0615},
+{0x0F12,0x0205},
+{0x0F12,0x0613},
+{0x0F12,0x0204},
+{0x0F12,0x0278},
+{0x0F12,0x0206},
+{0x0F12,0x02BE},
+{0x002A,0xF4AA},
+{0x0F12,0x00AF},
+{0x002A,0xF4AE},
+{0x0F12,0x00BE},
+{0x002A,0xF4B2},
+{0x0F12,0x00C1},
+{0x002A,0xF4B6},
+{0x0F12,0x0204},
+{0x0F12,0x0258},
+{0x0F12,0x0273},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x00C0},
+{0x002A,0xF5F4},
+{0x0F12,0x00C1},
+{0x002A,0xF4CA},
+{0x0F12,0x0615},
+{0x002A,0xF4CE},
+{0x0F12,0x0104},
+{0x0F12,0x0204},
+{0x0F12,0x0301},
+{0x0F12,0x0611},
+{0x0F12,0x0206},
+{0x0F12,0x021E},
+{0x0F12,0x020E},
+{0x0F12,0x0226},
+{0x0F12,0x0216},
+{0x0F12,0x0226},
+{0x0F12,0x0206},
+{0x0F12,0x0208},
+{0x002A,0xF4EA},
+{0x0F12,0x020E},
+{0x0F12,0x0226},
+{0x002A,0xF4F2},
+{0x0F12,0x0206},
+{0x0F12,0x0208},
+{0x0F12,0x0104},
+{0x0F12,0x0175},
+{0x0F12,0x0185},
+{0x0F12,0x0204},
+{0x002A,0xF500},
+{0x0F12,0x0301},
+{0x0F12,0x047A},
+{0x0F12,0x048A},
+{0x0F12,0x0611},
+{0x0F12,0x0176},
+{0x0F12,0x017D},
+{0x0F12,0x020A},
+{0x0F12,0x0212},
+{0x0F12,0x021F},
+{0x0F12,0x0227},
+{0x0F12,0x047B},
+{0x0F12,0x0482},
+{0x0F12,0x0615},
+{0x0F12,0x061D},
+{0x0F12,0x0178},
+{0x0F12,0x017E},
+{0x0F12,0x020C},
+{0x0F12,0x0213},
+{0x0F12,0x0221},
+{0x0F12,0x0228},
+{0x0F12,0x047D},
+{0x0F12,0x0483},
+{0x0F12,0x0617},
+{0x0F12,0x061E},
+{0x0F12,0x0179},
+{0x0F12,0x017E},
+{0x0F12,0x020D},
+{0x0F12,0x0213},
+{0x0F12,0x0222},
+{0x0F12,0x0228},
+{0x0F12,0x047E},
+{0x0F12,0x0483},
+{0x0F12,0x0618},
+{0x0F12,0x061E},
+{0x0F12,0x0176},
+{0x0F12,0x0178},
+{0x0F12,0x0206},
+{0x0F12,0x0208},
+{0x0F12,0x021D},
+{0x0F12,0x021F},
+{0x0F12,0x047B},
+{0x0F12,0x047D},
+{0x0F12,0x0613},
+{0x0F12,0x0615},
+{0x002A,0xF55C},
+{0x0F12,0x017C},
+{0x0F12,0x017F},
+{0x0F12,0x020C},
+{0x0F12,0x0211},
+{0x0F12,0x0223},
+{0x0F12,0x0228},
+{0x0F12,0x0481},
+{0x0F12,0x0484},
+{0x0F12,0x0619},
+{0x0F12,0x061E},
+{0x002A,0xF574},
+{0x0F12,0x0176},
+{0x0F12,0x0178},
+{0x0F12,0x0206},
+{0x0F12,0x0208},
+{0x0F12,0x021D},
+{0x0F12,0x021F},
+{0x0F12,0x047B},
+{0x0F12,0x047D},
+{0x0F12,0x0613},
+{0x0F12,0x0615},
+{0x002A,0xF58A},
+{0x0F12,0x017C},
+{0x0F12,0x020C},
+{0x0F12,0x0481},
+{0x0F12,0x0619},
+{0x0F12,0x0103},
+{0x0F12,0x0205},
+{0x0F12,0x0300},
+{0x0F12,0x0612},
+{0x002A,0xF59E},
+{0x0F12,0x0A6B},
+{0x002A,0xF5FA},
+{0x0F12,0x0206},
+{0x0F12,0x0208},
+{0x002A,0xF456},
+{0x0F12,0x0206},
+{0x0F12,0x0222},
+{0x002A,0xF5A2},
+{0x0F12,0x00C0},
+{0x0F12,0x0617},
+{0x0F12,0x00C1},
+{0x0F12,0x00C3},
+{0x0F12,0x0206},
+{0x0F12,0x0209},
+{0x0F12,0x0613},
+{0x0F12,0x0616},
+{0x0F12,0x0209},
+{0x0F12,0x0A60},
+{0x0F12,0x0A70},
+{0x002A,0xC342},
+{0x0F12,0x0A72},
+{0x002A,0xC200},
+{0x0F12,0x0A17},
+{0x002A,0xE300},
+{0x0F12,0x0007},
+{0x002A,0xF430},
+{0x0F12,0x0E10},
+{0x002A,0xC202},
+{0x0F12,0x0400},
+{0x002A,0xF422},
+{0x0F12,0x000E},
+{0x002A,0xF2AA},
+{0x0F12,0x0100},
+{0x002A,0xF40E},
+{0x0F12,0x0071},
+{0x002A,0xF42E},
+{0x0F12,0x00A6},
+{0x002A,0xF412},
+{0x0F12,0x00C8},
+{0x002A,0xF420},
+{0x0F12,0x1000},
+{0x002A,0xF40C},
+{0x0F12,0x0700},
+{0x002A,0x0054},
+{0x0F12,0x002D},
+{0x0028,0x2000},
+{0x002A,0x0D04},
+{0x0F12,0x0044},
+{0x0F12,0x0036},
+{0x0F12,0x0072},
+{0x0F12,0x082A},
+{0x002A,0x0CF8},
+{0x0F12,0x0001},
+{0x002A,0x0D9E},
+{0x0F12,0x0040},
+{0x0F12,0x0000},
+{0x0F12,0x0007},
+{0x002A,0x09DE},
+{0x0F12,0x0000},
+{0x002A,0x09E4},
+{0x0F12,0xF400},
+{0x0F12,0x005A},
+{0x0F12,0xF5B8},
+{0x0F12,0x0078},
+{0x0F12,0xE502},
+{0x0F12,0x0004},
+{0x0F12,0xE600},
+{0x0F12,0x003E},
+{0x0F12,0xF482},
+{0x0F12,0x013C},
+{0x0F12,0xE300},
+{0x0F12,0x0002},
+{0x0F12,0xF5F4},
+{0x0F12,0x0002},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x002A,0x14AC},
+{0x0F12,0x0001},
+{0x002A,0x149C},
+{0x0F12,0x0001},
+{0x002A,0x1498},
+{0x0F12,0x0001},
+{0x002A,0x149E},
+{0x0F12,0x0001},
+{0x002A,0x1478},
+{0x0F12,0x0001},
+{0x002A,0x1480},
+{0x0F12,0x00C0},
+{0x0F12,0x00F0},
+{0x0F12,0x0120},
+{0x0F12,0x0150},
+{0x0F12,0x0180},
+{0x0F12,0x01A0},
+{0x0F12,0x01F0},
+{0x002A,0x14AE},
+{0x0F12,0x5000},
+{0x0F12,0x3800},
+{0x0F12,0x3800},
+{0x0F12,0x3800},
+{0x0F12,0x3000},
+{0x0F12,0x4000},
+{0x0F12,0x4000},
+{0x0F12,0x3000},
+{0x0F12,0x4a00},
+{0x0F12,0x4000},
+{0x0F12,0x4000},
+{0x0F12,0x4000},
+{0x0F12,0x3800},
+{0x0F12,0x4000},
+{0x0F12,0x4000},
+{0x0F12,0x4000},
+{0x0F12,0x5000},
+{0x0F12,0x4000},
+{0x0F12,0x4000},
+{0x0F12,0x4000},
+{0x0F12,0x6400},
+{0x0F12,0x4000},
+{0x0F12,0x4000},
+{0x0F12,0x4800},
+{0x0F12,0x3800},
+{0x0F12,0x4000},
+{0x0F12,0x4000},
+{0x0F12,0x4000},
+{0x0F12,0x5400},
+{0x0F12,0x4000},
+{0x0F12,0x4000},
+{0x0F12,0x4000},
+{0x002A,0x1860},
+{0x0F12,0x0100},
+{0x0F12,0x0100},
+{0x0F12,0x0100},
+{0x0F12,0x0001},
+{0x0F12,0x0001},
+{0x0F12,0x0001},
+{0x0F12,0x0100},
+{0x0F12,0x0001},
+{0x0F12,0x0100},
+{0x0F12,0x0101},
+{0x0F12,0x0100},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0100},
+{0x0F12,0x0101},
+{0x0F12,0x0100},
+{0x0F12,0x0001},
+{0x0F12,0x0100},
+{0x0F12,0x0100},
+{0x0F12,0x0100},
+{0x0F12,0x0100},
+{0x0F12,0x0001},
+{0x0F12,0x0001},
+{0x0F12,0x0001},
+{0x0F12,0x0000},
+{0x0F12,0x0100},
+{0x0F12,0x0100},
+{0x0F12,0x0101},
+{0x0F12,0x0100},
+{0x0F12,0x0001},
+{0x0F12,0x0000},
+{0x0F12,0x0100},
+{0x0F12,0x0001},
+{0x0F12,0x0101},
+{0x0F12,0x0001},
+{0x0F12,0x0100},
+{0x0F12,0x0100},
+{0x0F12,0x0100},
+{0x0F12,0x0100},
+{0x0F12,0x0001},
+{0x0F12,0x0101},
+{0x0F12,0x0000},
+{0x0F12,0x0100},
+{0x0F12,0x0001},
+{0x0F12,0x0101},
+{0x0F12,0x0101},
+{0x0F12,0x0100},
+{0x0F12,0x0001},
+{0x0F12,0x0000},
+{0x0F12,0x0100},
+{0x0F12,0x0101},
+{0x0F12,0x0100},
+{0x0F12,0x0001},
+{0x0F12,0x0100},
+{0x0F12,0x0100},
+{0x0F12,0x0100},
+{0x0F12,0x0100},
+{0x0F12,0x0001},
+{0x0F12,0x0001},
+{0x0F12,0x0001},
+{0x0F12,0x0000},
+{0x0F12,0x0001},
+{0x0F12,0x0100},
+{0x0F12,0x0101},
+{0x0F12,0x0100},
+{0x0F12,0x0001},
+{0x0F12,0x0000},
+{0x0F12,0x0100},
+{0x0F12,0x0101},
+{0x0F12,0x0100},
+{0x0F12,0x0001},
+{0x0F12,0x0101},
+{0x0F12,0x4092},
+{0x0F12,0xF039},
+{0x0F12,0x0E2C},
+{0x0F12,0xF3C9},
+{0x0F12,0x0B98},
+{0x0F12,0xFA18},
+{0x0F12,0xE9B7},
+{0x0F12,0x03F9},
+{0x0F12,0xFD5B},
+{0x0F12,0x007E},
+{0x0F12,0xFE5B},
+{0x0F12,0x03F2},
+{0x0F12,0x10C7},
+{0x0F12,0xFF3D},
+{0x0F12,0xFF0B},
+{0x0F12,0x03B3},
+{0x0F12,0x018D},
+{0x0F12,0xF656},
+{0x0F12,0xF8BC},
+{0x0F12,0xFBBC},
+{0x0F12,0x024C},
+{0x0F12,0xFAE2},
+{0x0F12,0x01AF},
+{0x0F12,0x0A31},
+{0x0F12,0x0294},
+{0x0F12,0x071B},
+{0x0F12,0x01EB},
+{0x0F12,0xFFFA},
+{0x0F12,0xF9AC},
+{0x0F12,0xFE60},
+{0x0F12,0x0216},
+{0x0F12,0xFAF0},
+{0x0F12,0xFB04},
+{0x0F12,0x061E},
+{0x0F12,0x02E3},
+{0x0F12,0xFD32},
+{0x0F12,0x4E5C},
+{0x0F12,0xEE49},
+{0x0F12,0x0DB5},
+{0x0F12,0xF6FE},
+{0x0F12,0x082A},
+{0x0F12,0xFBC8},
+{0x0F12,0xE45F},
+{0x0F12,0x0099},
+{0x0F12,0xFD93},
+{0x0F12,0x039F},
+{0x0F12,0xFBE6},
+{0x0F12,0x0493},
+{0x0F12,0x10A0},
+{0x0F12,0x010E},
+{0x0F12,0x00C0},
+{0x0F12,0xFE57},
+{0x0F12,0x037A},
+{0x0F12,0xF900},
+{0x0F12,0xFCFC},
+{0x0F12,0xFBD3},
+{0x0F12,0x012C},
+{0x0F12,0xFFCC},
+{0x0F12,0xFFB8},
+{0x0F12,0x05FC},
+{0x0F12,0x01CF},
+{0x0F12,0x0578},
+{0x0F12,0x00AA},
+{0x0F12,0xFE22},
+{0x0F12,0xFC4D},
+{0x0F12,0x00A4},
+{0x0F12,0xFFFF},
+{0x0F12,0xFD71},
+{0x0F12,0xFBD8},
+{0x0F12,0x0668},
+{0x0F12,0x008A},
+{0x0F12,0xFD3F},
+{0x0F12,0x3D0C},
+{0x0F12,0xF1D4},
+{0x0F12,0x0B8E},
+{0x0F12,0xF879},
+{0x0F12,0x0557},
+{0x0F12,0xFE44},
+{0x0F12,0xEA7E},
+{0x0F12,0x039E},
+{0x0F12,0xFE94},
+{0x0F12,0xFE26},
+{0x0F12,0x011B},
+{0x0F12,0x0256},
+{0x0F12,0x11FA},
+{0x0F12,0xFFB6},
+{0x0F12,0xFDD6},
+{0x0F12,0x0572},
+{0x0F12,0xFFA7},
+{0x0F12,0xF799},
+{0x0F12,0xF5D2},
+{0x0F12,0xFBD4},
+{0x0F12,0x0271},
+{0x0F12,0xFC0B},
+{0x0F12,0xFFE0},
+{0x0F12,0x0A75},
+{0x0F12,0x04DA},
+{0x0F12,0x0663},
+{0x0F12,0x0221},
+{0x0F12,0xFE16},
+{0x0F12,0xFBFE},
+{0x0F12,0xFEBA},
+{0x0F12,0x01AE},
+{0x0F12,0xFB32},
+{0x0F12,0xFB71},
+{0x0F12,0x0678},
+{0x0F12,0x025F},
+{0x0F12,0xFC52},
+{0x0F12,0x4070},
+{0x0F12,0xF0A5},
+{0x0F12,0x0D99},
+{0x0F12,0xF462},
+{0x0F12,0x0AB0},
+{0x0F12,0xFAFF},
+{0x0F12,0xEAB3},
+{0x0F12,0x023F},
+{0x0F12,0xFE4C},
+{0x0F12,0x019A},
+{0x0F12,0xFC71},
+{0x0F12,0x049A},
+{0x0F12,0x0EC6},
+{0x0F12,0x01B8},
+{0x0F12,0xFE43},
+{0x0F12,0x0131},
+{0x0F12,0x03EE},
+{0x0F12,0xF6F5},
+{0x0F12,0xFB31},
+{0x0F12,0xF984},
+{0x0F12,0x02DA},
+{0x0F12,0xFDD8},
+{0x0F12,0xFF9A},
+{0x0F12,0x083A},
+{0x0F12,0x00A6},
+{0x0F12,0x077F},
+{0x0F12,0x0234},
+{0x0F12,0xFCFB},
+{0x0F12,0xFCCA},
+{0x0F12,0xFEAF},
+{0x0F12,0x02DD},
+{0x0F12,0xFBD8},
+{0x0F12,0xFA27},
+{0x0F12,0x0888},
+{0x0F12,0xFF08},
+{0x0F12,0xFF57},
+{0x002A,0x01E8},
+{0x0F12,0x0000},
+{0x0F12,0x0003},
+{0x0F12,0x0000},
+{0x002A,0x01F0},
+{0x0F12,0x0000},
+{0x002A,0x01F8},
+{0x0F12,0x000C},
+{0x002A,0x01FC},
+{0x0F12,0x0064},
+{0x002A,0x02D0},
+{0x0F12,0x0100},
+{0x0F12,0x00E3},
+{0x0F12,0x0200},
+{0x0F12,0x0238},
+{0x0F12,0x01C6},
+{0x0F12,0x0166},
+{0x0F12,0x0074},
+{0x0F12,0x0132},
+{0x0F12,0x0001},
+{0x002A,0x0A1A},
+{0x0F12,0x00FF},
+{0x002A,0x0A2A},
+{0x0F12,0x0000},
+{0x002A,0x0660},
+{0x0F12,0x0000},
+{0x002A,0x066C},
+{0x0F12,0x1002},
+{0x002A,0x0676},
+{0x0F12,0x0002},
+{0x0F12,0x0000},
+{0x002A,0x0670},
+{0x0F12,0x0003},
+{0x002A,0x0662},
+{0x0F12,0x00E5},
+{0x0F12,0x0098},
+{0x002A,0x06BE},
+{0x0F12,0xFF95},
+{0x002A,0x068E},
+{0x0F12,0x0280},
+{0x002A,0x069A},
+{0x0F12,0x03A0},
+{0x0F12,0x0320},
+{0x002A,0x06E0},
+{0x0F12,0x0030},
+{0x002A,0x0710},
+{0x0F12,0x0060},
+{0x002A,0x06F8},
+{0x0F12,0x0010},
+{0x002A,0x067A},
+{0x0F12,0x0000},
+{0x002A,0x05D4},
+{0x0F12,0x0086},
+{0x002A,0x05B8},
+{0x0F12,0x0080},
+{0x002A,0x05BC},
+{0x0F12,0x0080},
+{0x0F12,0x0174},
+{0x002A,0x05C0},
+{0x0F12,0x0120},
+{0x0F12,0x0120},
+{0x002A,0x05D8},
+{0x0F12,0x000d},
+{0x0F12,0x0086},
+{0x0F12,0x00AC},
+{0x0F12,0x00CF},
+{0x0F12,0x00EF},
+{0x0F12,0x010C},
+{0x0F12,0x0127},
+{0x0F12,0x013F},
+{0x0F12,0x0154},
+{0x0F12,0x0166},
+{0x0F12,0x0176},
+{0x0F12,0x0183},
+{0x0F12,0x018D},
+{0x0F12,0x0195},
+{0x0F12,0x0198},
+{0x0F12,0x014A},
+{0x0F12,0x0158},
+{0x0F12,0x0166},
+{0x0F12,0x0174},
+{0x0F12,0x0182},
+{0x0F12,0x0190},
+{0x0F12,0x019A},
+{0x002A,0x071A},
+{0x0F12,0x5050},
+{0x0F12,0x8080},
+{0x002A,0x0752},
+{0x0F12,0x03E0},
+{0x0F12,0x03C0},
+{0x0F12,0x03E0},
+{0x002A,0x056A},
+{0x0F12,0x8000},
+{0x0F12,0x0004},
+{0x0F12,0x3FF0},
+{0x002A,0x0574},
+{0x0F12,0x0020},
+{0x0F12,0x0030},
+{0x0F12,0x0010},
+{0x0F12,0x0040},
+{0x0F12,0x0080},
+{0x0F12,0x00C0},
+{0x0F12,0x00E0},
+{0x002A,0x0A3A},
+{0x0F12,0x0002},
+{0x002a,0x04c0},
+{0x0F12,0x0002},
+{0x002a,0x0c4e},
+{0x0F12,0x0260},
+{0x0F12,0x0229},
+{0x002a,0x0cd4},
+{0x0F12,0x0120},
+{0x0F12,0x0150},
+{0x0F12,0x0200},
+{0x0F12,0x003c},
+{0x0F12,0x003b},
+{0x0F12,0x0035},
+{0x002a,0x0ce0},
+{0x0f12,0x0100},
+{0x0f12,0x0120},
+{0x0f12,0x0150},
+{0x0f12,0x0200},
+{0x0f12,0x0400},
+{0x0f12,0x0060},
+{0x0f12,0x0050},
+{0x0f12,0x0035},
+{0x0f12,0x0028},
+{0x0f12,0x0010},
+{0x002A,0x1276},
+{0x0F12,0x0001},
+{0x002A,0x1270},
+{0x0F12,0x0001},
+{0x002A,0x051C},
+{0x0F12,0x077F},
+{0x002A,0x0B20},
+{0x0F12,0x0040},
+{0x002A,0x0854},
+{0x0F12,0x0002},
+{0x002A,0x081C},
+{0x0F12,0x0111},
+{0x0F12,0x00EF},
+{0x002A,0x08D4},
+{0x0F12,0x0001},
+{0x0F12,0x0001},
+{0x002A,0x08DC},
+{0x0F12,0x0001},
+{0x0F12,0x0000},
+{0x0F12,0x0A43},
+{0x0F12,0x0000},
+{0x0F12,0x0D05},
+{0x0F12,0x0000},
+{0x0F12,0x4008},
+{0x0F12,0x0000},
+{0x0F12,0xE000},
+{0x0F12,0x0000},
+{0x0F12,0x8D00},
+{0x0F12,0x0001},
+{0x0F12,0xFD00},
+{0x0F12,0x0001},
+{0x0F12,0xF1D4},
+{0x0F12,0x0002},
+{0x0F12,0xDC00},
+{0x0F12,0x0005},
+{0x0F12,0xDC00},
+{0x0F12,0x0005},
+{0x0F12,0x0001},
+{0x0F12,0x0000},
+{0x0F12,0x0A3C},
+{0x0F12,0x0000},
+{0x0F12,0x0D05},
+{0x0F12,0x0000},
+{0x0F12,0x3408},
+{0x0F12,0x0000},
+{0x0F12,0x3408},
+{0x0F12,0x0000},
+{0x0F12,0x6B10},
+{0x0F12,0x0000},
+{0x0F12,0x8214},
+{0x0F12,0x0000},
+{0x0F12,0xC350},
+{0x0F12,0x0000},
+{0x0F12,0xD4C0},
+{0x0F12,0x0001},
+{0x0F12,0xD4C0},
+{0x0F12,0x0001},
+{0x002A,0x08D8},
+{0x0F12,0x0800},
+{0x0F12,0x0100},
+{0x002A,0x086E},
+{0x0F12,0x0A00},
+{0x002A,0x0984},
+{0x0F12,0x3380},
+{0x002A,0x097A},
+{0x0F12,0x000C},
+{0x002A,0x0B2E},
+{0x0F12,0x0100},
+{0x0F12,0x0101},
+{0x0F12,0x0101},
+{0x0F12,0x0001},
+{0x0F12,0x0101},
+{0x0F12,0x0201},
+{0x0F12,0x0102},
+{0x0F12,0x0101},
+{0x0F12,0x0101},
+{0x0F12,0x0202},
+{0x0F12,0x0202},
+{0x0F12,0x0101},
+{0x0F12,0x0201},
+{0x0F12,0x0302},
+{0x0F12,0x0203},
+{0x0F12,0x0102},
+{0x0F12,0x0201},
+{0x0F12,0x0302},
+{0x0F12,0x0203},
+{0x0F12,0x0102},
+{0x0F12,0x0101},
+{0x0F12,0x0202},
+{0x0F12,0x0202},
+{0x0F12,0x0101},
+{0x0F12,0x0101},
+{0x0F12,0x0201},
+{0x0F12,0x0102},
+{0x0F12,0x0101},
+{0x0F12,0x0101},
+{0x0F12,0x0101},
+{0x0F12,0x0101},
+{0x0F12,0x0101},
+{0x002a,0x09AC},
+{0x0F12,0x0100},
+{0x0F12,0x00E0},
+{0x0F12,0x00D0},
+{0x0F12,0x00C0},
+{0x0F12,0x00B0},
+{0x0F12,0x00C0},
+{0x0F12,0x00D0},
+{0x0F12,0x00E0},
+{0x0F12,0x0100},
+{0x002A,0x121C},
+{0x0F12,0x0580},
+{0x0F12,0x0428},
+{0x0F12,0x07B0},
+{0x0F12,0x0008},
+{0x0F12,0x0190},
+{0x0F12,0x00A0},
+{0x0F12,0x0004},
+{0x0F12,0x0002},
+{0x002A,0x1208},
+{0x0F12,0x0000},
+{0x0F12,0xFFE0},
+{0x0F12,0x0000},
+{0x002A,0x1210},
+{0x0F12,0x00C2},
+{0x0F12,0x0002},
+{0x0F12,0x0001},
+{0x0F12,0x0074},
+{0x002A,0x121A},
+{0x0F12,0x0001},
+{0x002A,0x1226},
+{0x0F12,0x003C},
+{0x002A,0x0F88},
+{0x0F12,0x0120},
+{0x0F12,0x0121},
+{0x002A,0x0FA2},
+{0x0F12,0x041D},
+{0x002A,0x0FA6},
+{0x0F12,0x0000},
+{0x0F12,0x0771},
+{0x0F12,0x03A4},
+{0x0F12,0x0036},
+{0x0F12,0x002A},
+{0x002A,0x0FBC},
+{0x0F12,0x0032},
+{0x0F12,0x001E},
+{0x0F12,0xFEF7},
+{0x0F12,0x0021},
+{0x0F12,0x0AF0},
+{0x0F12,0x0AF0},
+{0x0F12,0x018F},
+{0x0F12,0x0096},
+{0x0F12,0x000E},
+{0x002A,0x0FC0},
+{0x0F12,0x00C0},
+{0x0F12,0x0010},
+{0x0F12,0x0002},
+{0x002A,0x2BAE},
+{0x0F12,0x0006},
+{0x002A,0x0F94},
+{0x0F12,0x000C},
+{0x002A,0x0FA0},
+{0x0F12,0x0020},
+{0x002A,0x0DB4},
+{0x0F12,0x037C},
+{0x0F12,0x03A8},
+{0x0F12,0x033C},
+{0x0F12,0x03C2},
+{0x0F12,0x02FE},
+{0x0F12,0x03C0},
+{0x0F12,0x02BA},
+{0x0F12,0x03B0},
+{0x0F12,0x028E},
+{0x0F12,0x0396},
+{0x0F12,0x026A},
+{0x0F12,0x0374},
+{0x0F12,0x0254},
+{0x0F12,0x033E},
+{0x0F12,0x0242},
+{0x0F12,0x0314},
+{0x0F12,0x021A},
+{0x0F12,0x02EC},
+{0x0F12,0x01F4},
+{0x0F12,0x02CC},
+{0x0F12,0x01D4},
+{0x0F12,0x02B8},
+{0x0F12,0x01CC},
+{0x0F12,0x02A2},
+{0x0F12,0x01D2},
+{0x0F12,0x027E},
+{0x0F12,0x01F6},
+{0x0F12,0x023A},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0005},
+{0x002A,0x0E08},
+{0x0F12,0x000E},
+{0x002A,0x0E0C},
+{0x0F12,0x0126},
+{0x002A,0x0E10},
+{0x0F12,0x0272},
+{0x0F12,0x02A0},
+{0x0F12,0x025A},
+{0x0F12,0x02BC},
+{0x0F12,0x024A},
+{0x0F12,0x02C0},
+{0x0F12,0x023C},
+{0x0F12,0x02BE},
+{0x0F12,0x022E},
+{0x0F12,0x02BC},
+{0x0F12,0x0224},
+{0x0F12,0x02B6},
+{0x0F12,0x0218},
+{0x0F12,0x02AA},
+{0x0F12,0x0210},
+{0x0F12,0x02A0},
+{0x0F12,0x020C},
+{0x0F12,0x0296},
+{0x0F12,0x020A},
+{0x0F12,0x028C},
+{0x0F12,0x0212},
+{0x0F12,0x027E},
+{0x0F12,0x0234},
+{0x0F12,0x0256},
+{0x0F12,0x0004},
+{0x002A,0x0E44},
+{0x0F12,0x000C},
+{0x002A,0x0E48},
+{0x0F12,0x01D8},
+{0x002A,0x0E4C},
+{0x0F12,0x0350},
+{0x0F12,0x0422},
+{0x0F12,0x02C4},
+{0x0F12,0x0452},
+{0x0F12,0x0278},
+{0x0F12,0x041C},
+{0x0F12,0x0230},
+{0x0F12,0x03EE},
+{0x0F12,0x01F0},
+{0x0F12,0x0392},
+{0x0F12,0x01C0},
+{0x0F12,0x0340},
+{0x0F12,0x0194},
+{0x0F12,0x0302},
+{0x0F12,0x016E},
+{0x0F12,0x02C2},
+{0x0F12,0x0148},
+{0x0F12,0x0286},
+{0x0F12,0x018A},
+{0x0F12,0x0242},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0006},
+{0x002A,0x0E80},
+{0x0F12,0x000A},
+{0x002A,0x0E84},
+{0x0F12,0x0108},
+{0x002A,0x0E88},
+{0x0F12,0x0380},
+{0x0F12,0x0000},
+{0x0F12,0x0168},
+{0x0F12,0x0000},
+{0x0F12,0x2D90},
+{0x0F12,0x0000},
+{0x002A,0x11EC},
+{0x0F12,0x02CE},
+{0x0F12,0x0347},
+{0x0F12,0x03C2},
+{0x0F12,0x0FCE},
+{0x0F12,0x1065},
+{0x0F12,0x10FE},
+{0x0F12,0x1158},
+{0x0F12,0x119E},
+{0x0F12,0x11A0},
+{0x0F12,0x11E6},
+{0x0F12,0x00AB},
+{0x0F12,0x00BF},
+{0x0F12,0x00D2},
+{0x0F12,0x0093},
+{0x002A,0x113C},
+{0x0F12,0xFF38},
+{0x0F12,0xFF6A},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0xFF38},
+{0x0F12,0xFF6A},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0xFF38},
+{0x0F12,0xFF6A},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0xFF66},
+{0x0F12,0x0000},
+{0x0F12,0xFFC4},
+{0x0F12,0xFFC4},
+{0x0F12,0xFFC4},
+{0x0F12,0xFFCE},
+{0x0F12,0xFFD0},
+{0x0F12,0xFFD0},
+{0x0F12,0x0000},
+{0x0F12,0xFFC4},
+{0x0F12,0xFFC4},
+{0x0F12,0xFFC4},
+{0x0F12,0xFFCE},
+{0x0F12,0xFFD0},
+{0x0F12,0xFFD0},
+{0x0F12,0x0000},
+{0x0F12,0xFFC4},
+{0x0F12,0xFFC4},
+{0x0F12,0xFFC4},
+{0x0F12,0xFFCE},
+{0x0F12,0xFFD0},
+{0x0F12,0xFFD0},
+{0x0F12,0xFFEC},
+{0x0F12,0x0014},
+{0x0F12,0x0014},
+{0x0F12,0xFFD8},
+{0x0F12,0xFFC4},
+{0x0F12,0xFF66},
+{0x0F12,0xFF66},
+{0x0F12,0xFFEC},
+{0x0F12,0x0014},
+{0x0F12,0x0014},
+{0x0F12,0xFFC4},
+{0x0F12,0xFFC4},
+{0x0F12,0xFF66},
+{0x0F12,0xFF66},
+{0x0F12,0xFFEC},
+{0x0F12,0x0014},
+{0x0F12,0x0014},
+{0x0F12,0xFFC4},
+{0x0F12,0xFFC4},
+{0x0F12,0xFF66},
+{0x0F12,0xFF66},
+{0x002A,0x146A},
+{0x0F12,0x00E4},
+{0x0F12,0x00F0},
+{0x0F12,0x0100},
+{0x0F12,0x0120},
+{0x0F12,0x0150},
+{0x0F12,0x0180},
+{0x0F12,0x0001},
+{0x002A,0x145C},
+{0x0F12,0x4800},
+{0x0F12,0x2000},
+{0x002A,0x1464},
+{0x0F12,0x48D8},
+{0x0F12,0x2000},
+{0x002A,0x4800},
+{0x0F12,0x0208},
+{0x0F12,0xFFB5},
+{0x0F12,0xFFE8},
+{0x0F12,0xFF20},
+{0x0F12,0x01BF},
+{0x0F12,0xFF53},
+{0x0F12,0x0022},
+{0x0F12,0xFFEA},
+{0x0F12,0x01C2},
+{0x0F12,0x00C6},
+{0x0F12,0x0095},
+{0x0F12,0xFEFD},
+{0x0F12,0x0206},
+{0x0F12,0xFF7F},
+{0x0F12,0x0191},
+{0x0F12,0xFF06},
+{0x0F12,0x01BA},
+{0x0F12,0x0108},
+{0x0F12,0x0208},
+{0x0F12,0xFFB5},
+{0x0F12,0xFFE8},
+{0x0F12,0xFF20},
+{0x0F12,0x01BF},
+{0x0F12,0xFF53},
+{0x0F12,0x0022},
+{0x0F12,0xFFEA},
+{0x0F12,0x01C2},
+{0x0F12,0x00C6},
+{0x0F12,0x0095},
+{0x0F12,0xFEFD},
+{0x0F12,0x0206},
+{0x0F12,0xFF7F},
+{0x0F12,0x0191},
+{0x0F12,0xFF06},
+{0x0F12,0x01BA},
+{0x0F12,0x0108},
+{0x0F12,0x0208},
+{0x0F12,0xFFB5},
+{0x0F12,0xFFE8},
+{0x0F12,0xFF20},
+{0x0F12,0x01BF},
+{0x0F12,0xFF53},
+{0x0F12,0x0022},
+{0x0F12,0xFFEA},
+{0x0F12,0x01C2},
+{0x0F12,0x00C6},
+{0x0F12,0x0095},
+{0x0F12,0xFEFD},
+{0x0F12,0x0206},
+{0x0F12,0xFF7F},
+{0x0F12,0x0191},
+{0x0F12,0xFF06},
+{0x0F12,0x01BA},
+{0x0F12,0x0108},
+{0x0F12,0x0204},
+{0x0F12,0xFFB2},
+{0x0F12,0xFFF5},
+{0x0F12,0xFEF1},
+{0x0F12,0x014E},
+{0x0F12,0xFF18},
+{0x0F12,0xFFE6},
+{0x0F12,0xFFDD},
+{0x0F12,0x01B2},
+{0x0F12,0x00F2},
+{0x0F12,0x00CA},
+{0x0F12,0xFF48},
+{0x0F12,0x0151},
+{0x0F12,0xFF50},
+{0x0F12,0x0147},
+{0x0F12,0xFF75},
+{0x0F12,0x0187},
+{0x0F12,0x01BF},
+{0x0F12,0x0204},
+{0x0F12,0xFFB2},
+{0x0F12,0xFFF5},
+{0x0F12,0xFEF1},
+{0x0F12,0x014E},
+{0x0F12,0xFF18},
+{0x0F12,0xFFE6},
+{0x0F12,0xFFDD},
+{0x0F12,0x01B2},
+{0x0F12,0x00F2},
+{0x0F12,0x00CA},
+{0x0F12,0xFF48},
+{0x0F12,0x0151},
+{0x0F12,0xFF50},
+{0x0F12,0x0147},
+{0x0F12,0xFF75},
+{0x0F12,0x0187},
+{0x0F12,0x01BF},
+{0x0F12,0x0204},
+{0x0F12,0xFFB2},
+{0x0F12,0xFFF5},
+{0x0F12,0xFEF1},
+{0x0F12,0x014E},
+{0x0F12,0xFF18},
+{0x0F12,0xFFE6},
+{0x0F12,0xFFDD},
+{0x0F12,0x01B2},
+{0x0F12,0x00F2},
+{0x0F12,0x00CA},
+{0x0F12,0xFF48},
+{0x0F12,0x0151},
+{0x0F12,0xFF50},
+{0x0F12,0x0147},
+{0x0F12,0xFF75},
+{0x0F12,0x0187},
+{0x0F12,0x01BF},
+{0x0F12,0x01E5},
+{0x0F12,0xFFA4},
+{0x0F12,0xFFDC},
+{0x0F12,0xFE90},
+{0x0F12,0x013F},
+{0x0F12,0xFF1B},
+{0x0F12,0xFFD2},
+{0x0F12,0xFFDF},
+{0x0F12,0x0236},
+{0x0F12,0x00EC},
+{0x0F12,0x00F8},
+{0x0F12,0xFF34},
+{0x0F12,0x01CE},
+{0x0F12,0xFF83},
+{0x0F12,0x0195},
+{0x0F12,0xFEF3},
+{0x0F12,0x0126},
+{0x0F12,0x0162},
+{0x002A,0x12F4},
+{0x0F12,0x0000},
+{0x0F12,0x000A},
+{0x0F12,0x0016},
+{0x0F12,0x0030},
+{0x0F12,0x0066},
+{0x0F12,0x00D5},
+{0x0F12,0x0138},
+{0x0F12,0x0163},
+{0x0F12,0x0189},
+{0x0F12,0x01C6},
+{0x0F12,0x01F8},
+{0x0F12,0x0222},
+{0x0F12,0x023D},
+{0x0F12,0x026E},
+{0x0F12,0x029C},
+{0x0F12,0x02EC},
+{0x0F12,0x032D},
+{0x0F12,0x036E},
+{0x0F12,0x03B2},
+{0x0F12,0x03FF},
+{0x0F12,0x0000},
+{0x0F12,0x000A},
+{0x0F12,0x0016},
+{0x0F12,0x0030},
+{0x0F12,0x0066},
+{0x0F12,0x00D5},
+{0x0F12,0x0138},
+{0x0F12,0x0163},
+{0x0F12,0x0189},
+{0x0F12,0x01C6},
+{0x0F12,0x01F8},
+{0x0F12,0x0222},
+{0x0F12,0x023D},
+{0x0F12,0x026E},
+{0x0F12,0x029C},
+{0x0F12,0x02EC},
+{0x0F12,0x032D},
+{0x0F12,0x036E},
+{0x0F12,0x03B2},
+{0x0F12,0x03FF},
+{0x0F12,0x0000},
+{0x0F12,0x000A},
+{0x0F12,0x0016},
+{0x0F12,0x0030},
+{0x0F12,0x0066},
+{0x0F12,0x00D5},
+{0x0F12,0x0138},
+{0x0F12,0x0163},
+{0x0F12,0x0189},
+{0x0F12,0x01C6},
+{0x0F12,0x01F8},
+{0x0F12,0x0222},
+{0x0F12,0x023D},
+{0x0F12,0x026E},
+{0x0F12,0x029C},
+{0x0F12,0x02EC},
+{0x0F12,0x032D},
+{0x0F12,0x036E},
+{0x0F12,0x03B2},
+{0x0F12,0x03FF},
+{0x0F12,0x0000},
+{0x0F12,0x000A},
+{0x0F12,0x0016},
+{0x0F12,0x0030},
+{0x0F12,0x0066},
+{0x0F12,0x00D5},
+{0x0F12,0x0138},
+{0x0F12,0x0163},
+{0x0F12,0x0189},
+{0x0F12,0x01C6},
+{0x0F12,0x01F8},
+{0x0F12,0x0222},
+{0x0F12,0x023D},
+{0x0F12,0x026E},
+{0x0F12,0x029C},
+{0x0F12,0x02EC},
+{0x0F12,0x032D},
+{0x0F12,0x036E},
+{0x0F12,0x03B2},
+{0x0F12,0x03FF},
+{0x0F12,0x0000},
+{0x0F12,0x000A},
+{0x0F12,0x0016},
+{0x0F12,0x0030},
+{0x0F12,0x0066},
+{0x0F12,0x00D5},
+{0x0F12,0x0138},
+{0x0F12,0x0163},
+{0x0F12,0x0189},
+{0x0F12,0x01C6},
+{0x0F12,0x01F8},
+{0x0F12,0x0222},
+{0x0F12,0x023D},
+{0x0F12,0x026E},
+{0x0F12,0x029C},
+{0x0F12,0x02EC},
+{0x0F12,0x032D},
+{0x0F12,0x036E},
+{0x0F12,0x03B2},
+{0x0F12,0x03FF},
+{0x0F12,0x0000},
+{0x0F12,0x000A},
+{0x0F12,0x0016},
+{0x0F12,0x0030},
+{0x0F12,0x0066},
+{0x0F12,0x00D5},
+{0x0F12,0x0138},
+{0x0F12,0x0163},
+{0x0F12,0x0189},
+{0x0F12,0x01C6},
+{0x0F12,0x01F8},
+{0x0F12,0x0222},
+{0x0F12,0x023D},
+{0x0F12,0x026E},
+{0x0F12,0x029C},
+{0x0F12,0x02EC},
+{0x0F12,0x032D},
+{0x0F12,0x036E},
+{0x0F12,0x03B2},
+{0x0F12,0x03FF},
+{0x002A,0x14FC},
+{0x0F12,0x003F},
+{0x0F12,0x0083},
+{0x0F12,0x012F},
+{0x0F12,0x01F0},
+{0x0F12,0x0255},
+{0x002A,0x14F0},
+{0x0F12,0x0000},
+{0x0F12,0x0014},
+{0x0F12,0x00D2},
+{0x0F12,0x0384},
+{0x0F12,0x07D0},
+{0x0F12,0x1388},
+{0x002A,0x152E},
+{0x0F12,0x0070},
+{0x0F12,0x0005},
+{0x0F12,0x0180},
+{0x0F12,0x0196},
+{0x002A,0x1538},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0064},
+{0x0F12,0x0020},
+{0x0F12,0x0050},
+{0x0F12,0x0080},
+{0x0F12,0x0008},
+{0x0F12,0x0020},
+{0x0F12,0x0050},
+{0x0F12,0x2F18},
+{0x0F12,0x001A},
+{0x0F12,0x3C24},
+{0x0F12,0x0C01},
+{0x0F12,0x100C},
+{0x0F12,0x0101},
+{0x0F12,0x0C0C},
+{0x0F12,0x3010},
+{0x0F12,0x100C},
+{0x0F12,0x100C},
+{0x0F12,0x0000},
+{0x0F12,0x0C08},
+{0x0F12,0x0C0C},
+{0x0F12,0x0610},
+{0x0F12,0x1008},
+{0x0F12,0x105A},
+{0x0F12,0x0000},
+{0x0F12,0x0406},
+{0x0F12,0x0608},
+{0x0F12,0x180C},
+{0x0F12,0x180C},
+{0x0F12,0x0204},
+{0x0F12,0x040C},
+{0x0F12,0x5A00},
+{0x0F12,0x4003},
+{0x0F12,0x0440},
+{0x0F12,0x0A04},
+{0x0F12,0x0101},
+{0x0F12,0x283C},
+{0x0F12,0x283C},
+{0x0F12,0x0601},
+{0x0F12,0x3C3C},
+{0x0F12,0x5004},
+{0x0F12,0x7808},
+{0x0F12,0x3C00},
+{0x0F12,0x5A3C},
+{0x0F12,0x0C04},
+{0x0F12,0x0F08},
+{0x0F12,0x050F},
+{0x0F12,0x8006},
+{0x0F12,0x0020},
+{0x0F12,0x0000},
+{0x0F12,0x1800},
+{0x0F12,0x0000},
+{0x0F12,0xE119},
+{0x0F12,0x7D0D},
+{0x0F12,0x1E10},
+{0x0F12,0x1C09},
+{0x0F12,0x0A00},
+{0x0F12,0x0A00},
+{0x0F12,0x0A0A},
+{0x0F12,0x0308},
+{0x0F12,0x0700},
+{0x0F12,0x0506},
+{0x0F12,0x0700},
+{0x0F12,0x0506},
+{0x0F12,0x1414},
+{0x0F12,0x1212},
+{0x0F12,0x080C},
+{0x0F12,0x0C10},
+{0x0F12,0x0406},
+{0x0F12,0x1F1F},
+{0x0F12,0x8080},
+{0x0F12,0x8000},
+{0x0F12,0x8000},
+{0x0F12,0x2001},
+{0x0F12,0x0140},
+{0x0F12,0x4020},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0050},
+{0x0F12,0x0020},
+{0x0F12,0x0050},
+{0x0F12,0x0080},
+{0x0F12,0x0008},
+{0x0F12,0x0020},
+{0x0F12,0x0050},
+{0x0F12,0x2F18},
+{0x0F12,0x001A},
+{0x0F12,0x3C24},
+{0x0F12,0x0C01},
+{0x0F12,0x100C},
+{0x0F12,0x0101},
+{0x0F12,0x0C0C},
+{0x0F12,0x3010},
+{0x0F12,0x100C},
+{0x0F12,0x1410},
+{0x0F12,0x0000},
+{0x0F12,0x0A04},
+{0x0F12,0x0A0C},
+{0x0F12,0x0510},
+{0x0F12,0x1408},
+{0x0F12,0x183C},
+{0x0F12,0x0000},
+{0x0F12,0x0406},
+{0x0F12,0x0608},
+{0x0F12,0x140C},
+{0x0F12,0x180C},
+{0x0F12,0x0204},
+{0x0F12,0x040C},
+{0x0F12,0x5A00},
+{0x0F12,0x4003},
+{0x0F12,0x0440},
+{0x0F12,0x0A04},
+{0x0F12,0x0101},
+{0x0F12,0x1E28},
+{0x0F12,0x1E28},
+{0x0F12,0x0500},
+{0x0F12,0x3C3C},
+{0x0F12,0x3204},
+{0x0F12,0x5008},
+{0x0F12,0x2000},
+{0x0F12,0x5A20},
+{0x0F12,0x0C04},
+{0x0F12,0x0F08},
+{0x0F12,0x050F},
+{0x0F12,0x8006},
+{0x0F12,0x0020},
+{0x0F12,0x0000},
+{0x0F12,0x1800},
+{0x0F12,0x0000},
+{0x0F12,0xE119},
+{0x0F12,0x7D0D},
+{0x0F12,0x1E10},
+{0x0F12,0x1C0B},
+{0x0F12,0x0A02},
+{0x0F12,0x0C04},
+{0x0F12,0x0A0C},
+{0x0F12,0x0308},
+{0x0F12,0x0700},
+{0x0F12,0x0506},
+{0x0F12,0x0700},
+{0x0F12,0x0506},
+{0x0F12,0x1414},
+{0x0F12,0x1212},
+{0x0F12,0x080C},
+{0x0F12,0x0C10},
+{0x0F12,0x0406},
+{0x0F12,0x1F1F},
+{0x0F12,0x8080},
+{0x0F12,0x8000},
+{0x0F12,0x8000},
+{0x0F12,0x3001},
+{0x0F12,0x0140},
+{0x0F12,0x4030},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0050},
+{0x0F12,0x0030},
+{0x0F12,0x0060},
+{0x0F12,0x0080},
+{0x0F12,0x000C},
+{0x0F12,0x0030},
+{0x0F12,0x0080},
+{0x0F12,0x2F18},
+{0x0F12,0x0420},
+{0x0F12,0x3C24},
+{0x0F12,0x0C01},
+{0x0F12,0x100C},
+{0x0F12,0x0101},
+{0x0F12,0x0C0C},
+{0x0F12,0x3010},
+{0x0F12,0x100C},
+{0x0F12,0x1410},
+{0x0F12,0x0000},
+{0x0F12,0x0602},
+{0x0F12,0x060C},
+{0x0F12,0x0510},
+{0x0F12,0x1008},
+{0x0F12,0x0101},
+{0x0F12,0x0000},
+{0x0F12,0x0408},
+{0x0F12,0x0808},
+{0x0F12,0x100C},
+{0x0F12,0x140C},
+{0x0F12,0x0204},
+{0x0F12,0x040C},
+{0x0F12,0x5A00},
+{0x0F12,0x4002},
+{0x0F12,0x0440},
+{0x0F12,0x0A04},
+{0x0F12,0x0101},
+{0x0F12,0x1824},
+{0x0F12,0x1824},
+{0x0F12,0x0500},
+{0x0F12,0x3C3C},
+{0x0F12,0x1E04},
+{0x0F12,0x2808},
+{0x0F12,0x2000},
+{0x0F12,0x5A20},
+{0x0F12,0x0C02},
+{0x0F12,0x0F08},
+{0x0F12,0x050F},
+{0x0F12,0x8006},
+{0x0F12,0x0020},
+{0x0F12,0x0000},
+{0x0F12,0x1800},
+{0x0F12,0x0000},
+{0x0F12,0xE119},
+{0x0F12,0x7D0D},
+{0x0F12,0x1E10},
+{0x0F12,0x1C0B},
+{0x0F12,0x0C04},
+{0x0F12,0x1004},
+{0x0F12,0x0A10},
+{0x0F12,0x0308},
+{0x0F12,0x0700},
+{0x0F12,0x0506},
+{0x0F12,0x0700},
+{0x0F12,0x0506},
+{0x0F12,0x1414},
+{0x0F12,0x0C0C},
+{0x0F12,0x080A},
+{0x0F12,0x0C10},
+{0x0F12,0x0406},
+{0x0F12,0x1C1F},
+{0x0F12,0x8080},
+{0x0F12,0x8000},
+{0x0F12,0x8000},
+{0x0F12,0x4A01},
+{0x0F12,0x0150},
+{0x0F12,0x4636},
+{0x0F12,0x0000},
+{0x0F12,0x0016},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0050},
+{0x0F12,0x0030},
+{0x0F12,0x0060},
+{0x0F12,0x0080},
+{0x0F12,0x000C},
+{0x0F12,0x0030},
+{0x0F12,0x0080},
+{0x0F12,0x2F18},
+{0x0F12,0x0420},
+{0x0F12,0x3C20},
+{0x0F12,0x0C01},
+{0x0F12,0x100C},
+{0x0F12,0x0101},
+{0x0F12,0x0C0C},
+{0x0F12,0x3010},
+{0x0F12,0x100C},
+{0x0F12,0x1810},
+{0x0F12,0x0000},
+{0x0F12,0x0602},
+{0x0F12,0x060C},
+{0x0F12,0x0510},
+{0x0F12,0x1008},
+{0x0F12,0x0101},
+{0x0F12,0x0000},
+{0x0F12,0x0406},
+{0x0F12,0x0608},
+{0x0F12,0x140C},
+{0x0F12,0x180C},
+{0x0F12,0x0204},
+{0x0F12,0x040C},
+{0x0F12,0x5A00},
+{0x0F12,0x4002},
+{0x0F12,0x0440},
+{0x0F12,0x0A04},
+{0x0F12,0x0101},
+{0x0F12,0x1420},
+{0x0F12,0x1420},
+{0x0F12,0x0500},
+{0x0F12,0x3C3C},
+{0x0F12,0x1E04},
+{0x0F12,0x2808},
+{0x0F12,0x2000},
+{0x0F12,0x5A20},
+{0x0F12,0x0C02},
+{0x0F12,0x0F08},
+{0x0F12,0x050F},
+{0x0F12,0x8006},
+{0x0F12,0x0020},
+{0x0F12,0x0000},
+{0x0F12,0x1800},
+{0x0F12,0x0000},
+{0x0F12,0xE119},
+{0x0F12,0x7D0D},
+{0x0F12,0x1E10},
+{0x0F12,0x1C0B},
+{0x0F12,0x0C08},
+{0x0F12,0x1406},
+{0x0F12,0x0A14},
+{0x0F12,0x0308},
+{0x0F12,0x0700},
+{0x0F12,0x0506},
+{0x0F12,0x0700},
+{0x0F12,0x0506},
+{0x0F12,0x1414},
+{0x0F12,0x0C0C},
+{0x0F12,0x080A},
+{0x0F12,0x0C10},
+{0x0F12,0x0406},
+{0x0F12,0x1C1F},
+{0x0F12,0x8080},
+{0x0F12,0x8000},
+{0x0F12,0x8000},
+{0x0F12,0x7801},
+{0x0F12,0x0164},
+{0x0F12,0x463A},
+{0x0F12,0x0000},
+{0x0F12,0x0016},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x003C},
+{0x0F12,0x0030},
+{0x0F12,0x0060},
+{0x0F12,0x0080},
+{0x0F12,0x000C},
+{0x0F12,0x0030},
+{0x0F12,0x0080},
+{0x0F12,0x2F18},
+{0x0F12,0x0420},
+{0x0F12,0x3C20},
+{0x0F12,0x0C01},
+{0x0F12,0x100C},
+{0x0F12,0x0101},
+{0x0F12,0x0C0C},
+{0x0F12,0x3010},
+{0x0F12,0x180C},
+{0x0F12,0x1810},
+{0x0F12,0x0000},
+{0x0F12,0x0402},
+{0x0F12,0x040C},
+{0x0F12,0x050C},
+{0x0F12,0x140C},
+{0x0F12,0x0101},
+{0x0F12,0x0000},
+{0x0F12,0x0205},
+{0x0F12,0x050C},
+{0x0F12,0x1810},
+{0x0F12,0x2010},
+{0x0F12,0x0102},
+{0x0F12,0x0210},
+{0x0F12,0x5A00},
+{0x0F12,0x4001},
+{0x0F12,0x0240},
+{0x0F12,0x0402},
+{0x0F12,0x0000},
+{0x0F12,0x0C18},
+{0x0F12,0x0C18},
+{0x0F12,0x0300},
+{0x0F12,0x3C32},
+{0x0F12,0x2802},
+{0x0F12,0x2806},
+{0x0F12,0x1000},
+{0x0F12,0x5A10},
+{0x0F12,0x0801},
+{0x0F12,0x0808},
+{0x0F12,0x0508},
+{0x0F12,0x8006},
+{0x0F12,0x0020},
+{0x0F12,0x0000},
+{0x0F12,0x0C00},
+{0x0F12,0x0000},
+{0x0F12,0xE119},
+{0x0F12,0x7D0D},
+{0x0F12,0x1E10},
+{0x0F12,0x1C0B},
+{0x0F12,0x1008},
+{0x0F12,0x1408},
+{0x0F12,0x0A14},
+{0x0F12,0x0308},
+{0x0F12,0x0700},
+{0x0F12,0x0506},
+{0x0F12,0x0700},
+{0x0F12,0x0506},
+{0x0F12,0x1010},
+{0x0F12,0x0808},
+{0x0F12,0x080A},
+{0x0F12,0x080C},
+{0x0F12,0x0406},
+{0x0F12,0x1C1F},
+{0x0F12,0x8080},
+{0x0F12,0x8000},
+{0x0F12,0x8000},
+{0x0F12,0x8C01},
+{0x0F12,0x01A0},
+{0x0F12,0x8C40},
+{0x0F12,0xFFEE},
+{0x0F12,0x3376},
+{0x0F12,0xBC3F},
+{0x0F12,0x0337},
+{0x002A,0x01E4},
+{0x0F12,0x5DC0},
+{0x002A,0x0200},
+{0x0F12,0x0002},
+{0x0F12,0x0006},
+{0x0F12,0x0086},
+{0x0F12,0x0000},
+{0x0F12,0x0005},
+{0x0F12,0x0004},
+{0x002A,0x0214},
+{0x0F12,0x0002},
+{0x0F12,0x0006},
+{0x0F12,0x00A2},
+{0x0F12,0x0000},
+{0x0F12,0x0006},
+{0x0F12,0x0004},
+{0x002A,0x0228},
+{0x0F12,0x0002},
+{0x002A,0x04B4},
+{0x0F12,0x005F},
+{0x0F12,0x005F},
+{0x0F12,0x0001},
+{0x0F12,0x0280},
+{0x0F12,0x01E0},
+{0x0F12,0x0005},
+{0x002A,0x12C8},
+{0x0F12,0x0054},
+{0x002A,0x0D24},
+{0x0F12,0x001C},
+{0x002A,0x02BE},
+{0x0F12,0x0001},
+{0x002A,0x02C4},
+{0x0F12,0x0000},
+{0x002A,0x028A},
+{0x0F12,0x0A00},
+{0x0F12,0x0780},
+{0x002A,0x0292},
+{0x0F12,0x0A00},
+{0x0F12,0x0780},
+{0x002A,0x029C},
+{0x0F12,0x0001},
+{0x0F12,0x0001},
+{0x002A,0x04D0},
+{0x0F12,0x0A00},
+{0x0F12,0x0780},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0A00},
+{0x0F12,0x0780},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x002A,0x02E2},
+{0x0F12,0x0500},
+{0x0F12,0x03c0},
+{0x0F12,0x0005},
+{0x002A,0x02EC},
+{0x0F12,0x0100},
+{0x0F12,0x0300},
+{0x0F12,0x0050},
+{0x0F12,0x0000},
+{0x0F12,0x01E0},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x03E8},
+{0x0F12,0x014D},
+{0x002A,0x030C},
+{0x0F12,0x0003},
+{0x0F12,0x0003},
+{0x002A,0x0312},
+{0x0F12,0x0500},
+{0x0F12,0x03C0},
+{0x0F12,0x0005},
+{0x002A,0x031C},
+{0x0F12,0x0100},
+{0x0F12,0x0300},
+{0x0F12,0x0050},
+{0x0F12,0x0000},
+{0x0F12,0x01E0},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0001},
+{0x0F12,0x07D0},
+{0x0F12,0x014D},
+{0x002A,0x033C},
+{0x0F12,0x0003},
+{0x0F12,0x0003},
+{0x002A,0x0342},
+{0x0F12,0x0500},
+{0x0F12,0x03C0},
+{0x0F12,0x0005},
+{0x002A,0x034C},
+{0x0F12,0x0100},
+{0x0F12,0x0300},
+{0x0F12,0x0050},
+{0x0F12,0x0000},
+{0x0F12,0x01E0},
+{0x0F12,0x0000},
+{0x0F12,0x0000},
+{0x0F12,0x0002},
+{0x0F12,0x0000},
+{0x0F12,0x014D},
+{0x0F12,0x014D},
+{0x002A,0x036C},
+{0x0F12,0x0003},
+{0x0F12,0x0003},
+{0x002A,0x03D2},
+{0x0F12,0x0000},
+{0x0F12,0x0A00},
+{0x0F12,0x0780},
+{0x0F12,0x0005},
+{0x002A,0x03DE},
+{0x0F12,0x0100},
+{0x0F12,0x0300},
+{0x0F12,0x0050},
+{0x0F12,0x0000},
+{0x0F12,0x0810},
+{0x0F12,0x0000},
+{0x0F12,0x0001},
+{0x0F12,0x0000},
+{0x0F12,0x0002},
+{0x0F12,0x03E8},
+{0x0F12,0x029A},
+{0x002A,0x03FE},
+{0x0F12,0x0000},
+{0x0F12,0x0A00},
+{0x0F12,0x0780},
+{0x0F12,0x0005},
+{0x002A,0x040A},
+{0x0F12,0x0100},
+{0x0F12,0x0300},
+{0x0F12,0x0050},
+{0x0F12,0x0000},
+{0x0F12,0x0810},
+{0x0F12,0x0000},
+{0x0F12,0x0001},
+{0x0F12,0x0000},
+{0x0F12,0x0002},
+{0x0F12,0x07D0},
+{0x0F12,0x029A},
+{0x002A,0x02A0},
+{0x0F12,0x0000},
+{0x002A,0x02A8},
+{0x0F12,0x0000},
+{0x002A,0x0266},
+{0x0F12,0x0001},
+{0xFCFC,0xD000},
+{0x002A,0x02A4},
+{0x0F12,0x0001},
+{0x002A,0x0288},
+{0x0F12,0x0001},
+{0x002A,0x0278},
+{0x0F12,0x0001},
+{0x0F12,0x0001},
+{0x002A,0x02C2},
+{0x0F12,0x0001},
+};
+
+static struct msm_camera_i2c_reg_conf af_init_reg[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x02C8},
+  {0x0F12,0x0003},
+};
+
+static struct msm_camera_i2c_reg_conf af_macro_reg[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x02CA},
+  {0x0F12,0x0140},
+  {0x002A,0x02C8},
+  {0x0F12,0x0004},
+};
+
+static struct msm_camera_i2c_reg_conf af_auto_reg[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x02CA},
+  {0x0F12,0x0000},
+  {0x002A,0x02C8},
+  {0x0F12,0x0005},
+};
+
+static struct msm_camera_i2c_reg_conf af_infinity_reg[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x02CA},
+  {0x0F12,0x0000},
+  {0x002A,0x02C8},
+  {0x0F12,0x0004},
+};
+
+static struct msm_camera_i2c_reg_conf af_continuous_reg[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x02CA},
+  {0x0F12,0x0000},
+  {0x002A,0x02C8},
+  {0x0F12,0x0006},
+};
+
+static struct msm_camera_i2c_reg_conf iso_auto_reg[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x050C},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0001},
+  {0x002A,0x1588},
+  {0x0F12,0x283C},
+  {0x0F12,0x283C},
+  {0x002A,0x081C},
+  {0x0F12,0x0111},
+  {0x0F12,0x00EF},
+};
+
+static struct msm_camera_i2c_reg_conf iso_100_reg[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x050C},
+  {0x0F12,0x0002},
+  {0x0F12,0x0100},
+  {0x0F12,0x0001},
+  {0x002A,0x1588},
+  {0x0F12,0x283C},
+  {0x0F12,0x283C},
+  {0x002A,0x081C},
+  {0x0F12,0x0130},
+  {0x0F12,0x00D0},
+};
+
+static struct msm_camera_i2c_reg_conf iso_200_reg[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x050C},
+  {0x0F12,0x0002},
+  {0x0F12,0x0180},
+  {0x0F12,0x0001},
+  {0x002A,0x1588},
+  {0x0F12,0x283C},
+  {0x0F12,0x283C},
+  {0x002A,0x081C},
+  {0x0F12,0x0130},
+  {0x0F12,0x00D0},
+};
+
+static struct msm_camera_i2c_reg_conf iso_400_reg[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x050C},
+  {0x0F12,0x0002},
+  {0x0F12,0x0300},
+  {0x0F12,0x0001},
+  {0x002A,0x1588},
+  {0x0F12,0x283C},
+  {0x0F12,0x283C},
+  {0x002A,0x081C},
+  {0x0F12,0x0130},
+  {0x0F12,0x00D0},
+};
+
+static struct msm_camera_i2c_reg_conf iso_800_reg[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x050C},
+  {0x0F12,0x0002},
+  {0x0F12,0x0600},
+  {0x0F12,0x0001},
+  {0x002A,0x1588},
+  {0x0F12,0x8080},
+  {0x0F12,0x8080},
+  {0x002A,0x081C},
+  {0x0F12,0x0130},
+  {0x0F12,0x00D0},
+};
+
+static struct msm_camera_i2c_reg_conf ae_mode_average_reg[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x0B2E},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x002A,0x0C3E},
+  {0x0F12,0x0001},
+};
+
+static struct msm_camera_i2c_reg_conf ae_mode_center_reg[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x0B2E},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0f01},
+  {0x0F12,0x010f},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0f01},
+  {0x0F12,0x010f},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x002A,0x0C3E},
+  {0x0F12,0x0001},
+};
+
+static struct msm_camera_i2c_reg_conf ae_mode_spot_reg[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x0B2E},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0f00},
+  {0x0F12,0x000f},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0f00},
+  {0x0F12,0x000f},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x002A,0x0C3E},
+  {0x0F12,0x0001},
+};
+
+static struct msm_camera_i2c_reg_conf wb_auto_reg[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x051C},
+  {0x0F12,0x077F},
+
+  {0x002A,0x0C4E},
+  {0x0F12,0x0260},
+  {0x0F12,0x0229},
+};
+
+static struct msm_camera_i2c_reg_conf wb_daylight_reg[] =
+{
+
+  {0x0028,0x2000},
+  {0x002A,0x051C},
+  {0x0F12,0x0777},
+  {0x002A,0x04F6},
+  {0x0F12,0x04E1},
+  {0x0F12,0x0000},
+  {0x0F12,0x0400},
+  {0x0F12,0x0000},
+  {0x0F12,0x0652},
+  {0x0F12,0x0000},
+  {0x002A,0x0502},
+  {0x0F12,0x0001},
+
+  {0x002A,0x0C4E},
+  {0x0F12,0x02AC},
+  {0x0F12,0x0210},
+
+};
+
+static struct msm_camera_i2c_reg_conf wb_cloudy_reg[] =
+{
+
+  {0x0028,0x2000},
+  {0x002A,0x051C},
+  {0x0F12,0x0777},
+  {0x002A,0x04F6},
+  {0x0F12,0x0529},
+  {0x0F12,0x0000},
+  {0x0F12,0x0400},
+  {0x0F12,0x0000},
+  {0x0F12,0x04C2},
+  {0x0F12,0x0000},
+  {0x002A,0x0502},
+  {0x0F12,0x0001},
+
+  {0x002A,0x0C4E},
+  {0x0F12,0x025E},
+  {0x0F12,0x0292},
+
+};
+
+static struct msm_camera_i2c_reg_conf wb_incandescent_reg[] =
+{
+
+  {0x0028,0x2000},
+  {0x002A,0x051C},
+  {0x0F12,0x0777},
+  {0x002A,0x04F6},
+  {0x0F12,0x0350},
+  {0x0F12,0x0000},
+  {0x0F12,0x0400},
+  {0x0F12,0x0000},
+  {0x0F12,0x0930},
+  {0x0F12,0x0000},
+  {0x002A,0x0502},
+  {0x0F12,0x0001},
+
+  {0x002A,0x0C4E},
+  {0x0F12,0x03A7},
+  {0x0F12,0x0151},
+
+};
+
+static struct msm_camera_i2c_reg_conf wb_fluorescent_reg[] =
+{
+
+  {0x0028,0x2000},
+  {0x002A,0x051C},
+  {0x0F12,0x0777},
+  {0x002A,0x04F6},
+  {0x0F12,0x04F5},
+  {0x0F12,0x0000},
+  {0x0F12,0x0400},
+  {0x0F12,0x0000},
+  {0x0F12,0x06f5},
+  {0x0F12,0x0000},
+  {0x002A,0x0502},
+  {0x0F12,0x0001},
+
+  {0x002A,0x0C4E},
+  {0x0F12,0x02B5},
+  {0x0F12,0x01EE},
+
+};
+
+static struct msm_camera_i2c_reg_conf scene_auto_reg[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x051C},
+  {0x0F12,0x077F},
+
+  {0x002A,0x0C4E},
+  {0x0F12,0x0260},
+  {0x0F12,0x0229},
+
+  {0x002A,0x050C},
+  {0x0F12,0x0002},
+  {0x0F12,0x0100},
+  {0x0F12,0x0001},
+  {0x002A,0x026A},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x002A,0x0276},
+  {0x0F12,0x0000},
+  {0x002A,0x0B2E},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x002A,0x0C3E},
+  {0x0F12,0x0001},
+  {0x002A,0x02A0},
+  {0x0F12,0x0000},
+  {0x0F12,0x0001},
+  {0x002A,0x02A8},
+  {0x0F12,0x0000},
+  {0x0F12,0x0001},
+};
+
+static struct msm_camera_i2c_reg_conf scene_portrait_reg[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x051C},
+  {0x0F12,0x077F},
+
+  {0x002A,0x0C4E},
+  {0x0F12,0x0260},
+  {0x0F12,0x0229},
+
+  {0x002A,0x050C},
+  {0x0F12,0x0002},
+  {0x0F12,0x0100},
+  {0x0F12,0x0001},
+  {0x002A,0x026A},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0xFF41},
+  {0x002A,0x0276},
+  {0x0F12,0x0000},
+  {0x002A,0x0B2E},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0f01},
+  {0x0F12,0x010f},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0f01},
+  {0x0F12,0x010f},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x002A,0x0C3E},
+  {0x0F12,0x0001},
+  {0x002A,0x02A0},
+  {0x0F12,0x0000},
+  {0x0F12,0x0001},
+  {0x002A,0x02A8},
+  {0x0F12,0x0000},
+  {0x0F12,0x0001},
+};
+
+static struct msm_camera_i2c_reg_conf scene_landscape_reg[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x051C},
+  {0x0F12,0x077F},
+
+  {0x002A,0x0C4E},
+  {0x0F12,0x0260},
+  {0x0F12,0x0229},
+
+  {0x002A,0x050C},
+  {0x0F12,0x0002},
+  {0x0F12,0x0100},
+  {0x0F12,0x0001},
+  {0x002A,0x026A},
+  {0x0F12,0x0000},
+  {0x0F12,0x0040},
+  {0x0F12,0x0040},
+  {0x0F12,0x0040},
+  {0x002A,0x0276},
+  {0x0F12,0x0000},
+  {0x002A,0x0B2E},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x002A,0x0C3E},
+  {0x0F12,0x0001},
+  {0x002A,0x02A0},
+  {0x0F12,0x0000},
+  {0x0F12,0x0001},
+  {0x002A,0x02A8},
+  {0x0F12,0x0000},
+  {0x0F12,0x0001},
+};
+
+static struct msm_camera_i2c_reg_conf scene_night_portrait_reg[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x051C},
+  {0x0F12,0x077F},
+
+  {0x002A,0x0C4E},
+  {0x0F12,0x0260},
+  {0x0F12,0x0229},
+
+  {0x002A,0x050C},
+  {0x0F12,0x0002},
+  {0x0F12,0x0100},
+  {0x0F12,0x0001},
+  {0x002A,0x026A},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0xFF41},
+  {0x002A,0x0276},
+  {0x0F12,0x0000},
+  {0x002A,0x0B2E},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0f01},
+  {0x0F12,0x010f},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0f01},
+  {0x0F12,0x010f},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x002A,0x0C3E},
+  {0x0F12,0x0001},
+  {0x002A,0x02A0},
+  {0x0F12,0x0001},
+  {0x0F12,0x0001},
+  {0x002A,0x02A8},
+  {0x0F12,0x0001},
+  {0x0F12,0x0001},
+};
+
+static struct msm_camera_i2c_reg_conf scene_night_landscape_reg[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x051C},
+  {0x0F12,0x077F},
+
+  {0x002A,0x0C4E},
+  {0x0F12,0x0260},
+  {0x0F12,0x0229},
+
+  {0x002A,0x050C},
+  {0x0F12,0x0002},
+  {0x0F12,0x0100},
+  {0x0F12,0x0001},
+  {0x002A,0x026A},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x002A,0x0276},
+  {0x0F12,0x0000},
+  {0x002A,0x0B2E},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x002A,0x0C3E},
+  {0x0F12,0x0001},
+  {0x002A,0x02A0},
+  {0x0F12,0x0001},
+  {0x0F12,0x0001},
+  {0x002A,0x02A8},
+  {0x0F12,0x0001},
+  {0x0F12,0x0001},
+};
+
+static struct msm_camera_i2c_reg_conf scene_action_reg[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x051C},
+  {0x0F12,0x077F},
+
+  {0x002A,0x0C4E},
+  {0x0F12,0x0260},
+  {0x0F12,0x0229},
+
+  {0x002A,0x050C},
+  {0x0F12,0x0002},
+  {0x0F12,0x0400},
+  {0x0F12,0x0001},
+  {0x002A,0x026A},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x0F12,0x0000},
+  {0x002A,0x0276},
+  {0x0F12,0x0000},
+  {0x002A,0x0B2E},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0f01},
+  {0x0F12,0x010f},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0f01},
+  {0x0F12,0x010f},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x0F12,0x0101},
+  {0x002A,0x0C3E},
+  {0x0F12,0x0001},
+  {0x002A,0x02A0},
+  {0x0F12,0x0002},
+  {0x0F12,0x0001},
+  {0x002A,0x02A8},
+  {0x0F12,0x0000},
+  {0x0F12,0x0001},
+};
+
+static struct msm_camera_i2c_reg_conf flash_reg_prestart_for_AutoWB[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x0C42},
+  {0x0F12,0x0001},
+  {0x0028,0x2000},
+  {0x002A,0x0C52},
+  {0x0F12,0x0100},
+  {0x0F12,0x0100},
+  {0x0F12,0x0100},
+  {0x0F12,0x0100},
+  {0x0F12,0x0100},
+
+  {0x0028,0x2000},
+  {0x002A,0x0854},
+  {0x0F12,0x0000},
+  {0x002A,0x0CF4},
+  {0x0F12,0x0001},
+  {0x002A,0x04C0},
+  {0x0F12,0x0001},
+};
+
+static struct msm_camera_i2c_reg_conf flash_reg_prestart_for_ManualWB[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x0C42},
+  {0x0F12,0x0000},
+  {0x0028,0x2000},
+  {0x002A,0x0C52},
+  {0x0F12,0x0100},
+  {0x0F12,0x0100},
+  {0x0F12,0x0100},
+  {0x0F12,0x0100},
+  {0x0F12,0x0100},
+
+  {0x0028,0x2000},
+  {0x002A,0x0854},
+  {0x0F12,0x0000},
+  {0x002A,0x0CF4},
+  {0x0F12,0x0001},
+  {0x002A,0x04C0},
+  {0x0F12,0x0001},
+};
+
+static struct msm_camera_i2c_reg_conf flash_reg_preend[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x0854},
+  {0x0F12,0x0002},
+  {0x002A,0x0CF6},
+  {0x0F12,0x0001},
+  {0x002A,0x04C0},
+  {0x0F12,0x0000},
+};
+
+static struct msm_camera_i2c_reg_conf flash_reg_start[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x2500},
+  {0x0F12,0x0002},
+  {0x002A,0x0C44},
+  {0x0F12,0x0001},
+  {0x002A,0x04C0},
+  {0x0F12,0x0002},
+};
+
+static struct msm_camera_i2c_reg_conf flash_reg_end[] =
+{
+  {0x0028,0x2000},
+  {0x002A,0x0C44},
+  {0x0F12,0x0000},
+  {0x002A,0x04C0},
+  {0x0F12,0x0000},
+};
+
+static struct v4l2_subdev_info camsensor_main_subdev_info[] = {
+	{
+	.code   = V4L2_MBUS_FMT_YUYV8_2X8,
+	.colorspace = V4L2_COLORSPACE_JPEG,
+	.fmt    = 1,
+	.order    = 0,
+	},
+	
+};
+
+static struct msm_camera_i2c_conf_array camsensor_main_init_conf[] = {
+	{&camsensor_main_recommend_settings[0],
+	ARRAY_SIZE(camsensor_main_recommend_settings), 0, MSM_CAMERA_I2C_WORD_DATA}
+};
+
+static struct msm_camera_i2c_conf_array camsensor_main_confs[] = {
+	{&camsensor_main_still_settings[0],
+	ARRAY_SIZE(camsensor_main_still_settings), 0, MSM_CAMERA_I2C_WORD_DATA},
+	{&camsensor_main_prev_settings[0],
+	ARRAY_SIZE(camsensor_main_prev_settings), 0, MSM_CAMERA_I2C_WORD_DATA},
+};
+
+static struct msm_sensor_output_info_t camsensor_main_dimensions[] = {
+	{
+		.x_output = 2560,
+		.y_output = 1920,
+		.line_length_pclk = 2560,
+		.frame_length_lines = 1920,
+		.vt_pixel_clk = 73728000,
+		.op_pixel_clk = 200000000,
+		.binning_factor = 1,
+	},
+	{
+		.x_output = 1280,
+		.y_output = 960,
+		.line_length_pclk = 1280,
+		.frame_length_lines = 960,
+		.vt_pixel_clk = 36864000,
+		.op_pixel_clk = 153600000,
+		.binning_factor = 1,
+	},
+};
+
+static struct msm_sensor_output_reg_addr_t camsensor_main_reg_addr = {
+	.x_output = 0x0342,
+	.y_output = 0x0344,
+	.line_length_pclk = 0x380c,
+	.frame_length_lines = 0x380e,
+};
+
+static struct msm_sensor_id_info_t camsensor_main_id_info = {
+	.sensor_id_reg_addr = 0x300A,
+	.sensor_id = 0x5651,
+};
+
+static struct msm_sensor_exp_gain_info_t camsensor_main_exp_gain_info = {
+	.coarse_int_time_addr = 0x3501,
+	.global_gain_addr = 0x350B,
+	.vert_offset = 4,
+};
+
+int32_t camsensor_main_i2c_probe(struct i2c_client *client,
+	const struct i2c_device_id *id)
+{
+	int rc = 0;
+	struct msm_camera_sensor_info *s_info;
+
+	rc = msm_sensor_i2c_probe(client, id);
+    CDBG("msm_sensor_i2c_probe returns %d\n",rc );
+
+	s_info = client->dev.platform_data;
+	if (s_info == NULL) {
+		pr_err("%s %s NULL sensor data\n", __func__, client->name);
+		return -EFAULT;
+	}
+	rc = 0;
+
+	return rc;
+}
+
+int32_t camsensor_main_write_init_settings(struct msm_sensor_ctrl_t *s_ctrl)
+{
+  int32_t rc;
+
+  API_LOG("%s E\n", __func__);
+
+  rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client,
+                                camsensor_main_header_settings,
+                                ARRAY_SIZE(camsensor_main_header_settings),
+                                MSM_CAMERA_I2C_WORD_DATA);
+
+  if (rc < 0)
+    return rc;
+
+  usleep_range(10000,10000);
+
+#ifdef FEATURE_KYOCERA_MCAM_BB_ADJ
+  if( camadjust_flag & CAMADJ_FLAG_INIT )
+  {
+    ADJ_LOG("[CAMADJ_LOG]Camera Init Adjust Enable\n");
+    rc = msm_sensor_write_all_conf_array(s_ctrl->sensor_i2c_client,
+                                         &camadjust_init_conf[0],
+                                         ARRAY_SIZE(camadjust_init_conf));
+  }
+  else
+  {
+    ADJ_LOG("[CAMADJ_LOG]Normal Init\n");
+    rc = msm_sensor_write_all_conf_array(s_ctrl->sensor_i2c_client,
+                                         s_ctrl->msm_sensor_reg->init_settings,
+                                         s_ctrl->msm_sensor_reg->init_size);
+  }
+#else
+  rc = msm_sensor_write_all_conf_array(s_ctrl->sensor_i2c_client,
+                                       s_ctrl->msm_sensor_reg->init_settings,
+                                       s_ctrl->msm_sensor_reg->init_size);
+#endif
+
+  API_LOG("%s X\n", __func__);
+
+  return rc;
+}
+
+int32_t camsensor_main_write_res_settings(struct msm_sensor_ctrl_t *s_ctrl, uint16_t res)
+{
+  int32_t rc;
+
+  API_LOG("%s E\n", __func__);
+
+  rc = msm_sensor_write_conf_array(s_ctrl->sensor_i2c_client, s_ctrl->msm_sensor_reg->mode_settings, res);
+
+  API_LOG("%s X\n", __func__);
+
+  return rc;
+}
+
+int32_t camsensor_main_sensor_set_iso(struct msm_sensor_ctrl_t *s_ctrl, uint16_t iso)
+{
+  int32_t rc = 0;
+
+  struct msm_camera_i2c_reg_conf* set_reg = NULL;
+  uint16_t set_reg_size = 0;
+
+  API_LOG("%s: E \n",__func__ );
+  SEQ_LOG("%s: ISO:[%d]\n",__func__ ,iso);
+
+  if( iso >= CAMERA_ISO_TYPE_MAX )
+  {
+    ERR_LOG("[%s] Param Err Over Max Value [%d]\n",__func__ ,iso);
+    return -EINVAL;
+  }
+
+  if( camsensor_main_drv_ctrl->iso_mode == iso )
+  {
+    SEQ_LOG("Same Iso Value \n");
+    return rc;
+  }
+
+  switch ( iso )
+  {
+    case CAMERA_ISO_TYPE_AUTO:
+      SEQ_LOG("### CAM_ISO_AUTO\n");
+
+      set_reg = (struct msm_camera_i2c_reg_conf *)&iso_auto_reg[0];
+      set_reg_size = ARRAY_SIZE(iso_auto_reg);
+
+      break;
+    case CAMEAR_ISO_TYPE_100:
+      SEQ_LOG("### CAM_ISO_100\n");
+
+      set_reg = (struct msm_camera_i2c_reg_conf *)&iso_100_reg[0];
+      set_reg_size = ARRAY_SIZE(iso_100_reg);
+
+#ifdef FEATURE_KYOCERA_MCAM_BB_ADJ
+      if( camadjust_flag & CAMADJ_FLAG_ISO_100 )
+      {
+        set_reg = (struct msm_camera_i2c_reg_conf *)&camadjust_ISO_100_conf[0].conf[0];
+        set_reg_size = camadjust_ISO_100_conf[0].size;
+      }
+#endif
+
+      break;
+    case CAMERA_ISO_TYPE_200:
+      SEQ_LOG("### CAM_ISO_200\n");
+
+      set_reg = (struct msm_camera_i2c_reg_conf *)&iso_200_reg[0];
+      set_reg_size = ARRAY_SIZE(iso_200_reg);
+
+#ifdef FEATURE_KYOCERA_MCAM_BB_ADJ
+      if( camadjust_flag & CAMADJ_FLAG_ISO_200 )
+      {
+        set_reg = (struct msm_camera_i2c_reg_conf *)&camadjust_ISO_200_conf[0].conf[0];
+        set_reg_size = camadjust_ISO_200_conf[0].size;
+      }
+#endif
+
+      break;
+    case CAMERA_ISO_TYPE_400:
+      SEQ_LOG("### CAM_ISO_400\n");
+
+      set_reg = (struct msm_camera_i2c_reg_conf *)&iso_400_reg[0];
+      set_reg_size = ARRAY_SIZE(iso_400_reg);
+
+#ifdef FEATURE_KYOCERA_MCAM_BB_ADJ
+      if( camadjust_flag & CAMADJ_FLAG_ISO_400 )
+      {
+        set_reg = (struct msm_camera_i2c_reg_conf *)&camadjust_ISO_400_conf[0].conf[0];
+        set_reg_size = camadjust_ISO_400_conf[0].size;
+      }
+#endif
+
+      break;
+    case CAMEAR_ISO_TYPE_800:
+      SEQ_LOG("### CAM_ISO_800\n");
+
+      set_reg = (struct msm_camera_i2c_reg_conf *)&iso_800_reg[0];
+      set_reg_size = ARRAY_SIZE(iso_800_reg);
+
+#ifdef FEATURE_KYOCERA_MCAM_BB_ADJ
+      if( camadjust_flag & CAMADJ_FLAG_ISO_800 )
+      {
+        set_reg = (struct msm_camera_i2c_reg_conf *)&camadjust_ISO_800_conf[0].conf[0];
+        set_reg_size = camadjust_ISO_800_conf[0].size;
+      }
+#endif
+
+      break;
+    default:
+      ERR_LOG("%s Param Err Not Supported Value [%d]\n", __func__, iso);
+      return -EINVAL;
+  }
+
+  rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client, set_reg,
+                                set_reg_size, MSM_CAMERA_I2C_WORD_DATA);
+
+  camsensor_main_drv_ctrl->iso_mode = iso;
+
+  API_LOG("%s: (rc=%d) X \n", __func__, rc);
+  return 0;
+}
+
+int32_t camsensor_main_sensor_set_ae_mode(struct msm_sensor_ctrl_t *s_ctrl, uint16_t ae_mode)
+{
+  int32_t rc = 0;
+
+  struct msm_camera_i2c_reg_conf* set_reg = NULL;
+  uint16_t set_reg_size = 0;
+
+  API_LOG("%s: E \n",__func__ );
+  SEQ_LOG("%s: AE_MODE:[%d]\n",__func__ ,ae_mode);
+
+  if( ae_mode >= MSM_CAMERA_AEC_MAX_MODES )
+  {
+    ERR_LOG("[%s] Param Err Over Max Value [%d]\n",__func__ ,ae_mode);
+    return -EINVAL;
+  }
+
+  if( camsensor_main_drv_ctrl->ae_mode == ae_mode )
+  {
+    SEQ_LOG("Same AEC Value \n");
+    return rc;
+  }
+
+  switch ( ae_mode )
+  {
+    case MSM_CAMERA_AEC_FRAME_AVERAGE:
+      SEQ_LOG("### CAM_AEC_FRAME_AVERAGE\n");
+
+      set_reg = (struct msm_camera_i2c_reg_conf *)&ae_mode_average_reg[0];
+      set_reg_size = ARRAY_SIZE(ae_mode_average_reg);
+
+      break;
+    case MSM_CAMERA_AEC_CENTER_WEIGHTED:
+      SEQ_LOG("### CAM_AEC_CENTER_WEIGHTED\n");
+
+      set_reg = (struct msm_camera_i2c_reg_conf *)&ae_mode_center_reg[0];
+      set_reg_size = ARRAY_SIZE(ae_mode_center_reg);
+
+      break;
+    case MSM_CAMERA_AEC_SPOT_METERING:
+      SEQ_LOG("### CAM_AEC_SPOT_METERING\n");
+
+      set_reg = (struct msm_camera_i2c_reg_conf *)&ae_mode_spot_reg[0];
+      set_reg_size = ARRAY_SIZE(ae_mode_spot_reg);
+
+      break;
+    default:
+      ERR_LOG("%s Param Err Not Supported Value [%d]\n", __func__, ae_mode);
+      return -EINVAL;
+  }
+
+  rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client, set_reg,
+                                set_reg_size, MSM_CAMERA_I2C_WORD_DATA);
+
+  camsensor_main_drv_ctrl->ae_mode = ae_mode;
+
+  camsensor_main_ae_map = 0;
+
+  API_LOG("%s: (rc=%d) X \n", __func__, rc);
+  return 0;
+}
+
+int32_t camsensor_main_sensor_set_white_balance(struct msm_sensor_ctrl_t *s_ctrl, uint16_t wb)
+{
+  int32_t rc = 0;
+
+  struct msm_camera_i2c_reg_conf* set_reg = NULL;
+  uint16_t set_reg_size = 0;
+
+  API_LOG("%s: E \n",__func__ );
+  SEQ_LOG("%s: wb:[%d]\n",__func__ ,wb);
+
+  if( wb >= CAMERA_WB_MAX )
+  {
+    ERR_LOG("[%s] Param Err Over Max Value [%d]\n",__func__ ,wb);
+    return -EINVAL;
+  }
+
+  if( camsensor_main_drv_ctrl->wb_mode == wb )
+  {
+    SEQ_LOG("Same WB Value \n");
+    return rc;
+  }
+
+  switch ( wb )
+  {
+    case CAMERA_WB_AUTO:
+      SEQ_LOG("### CAMERA_WB_AUTO\n");
+
+      set_reg = (struct msm_camera_i2c_reg_conf *)&wb_auto_reg[0];
+      set_reg_size = ARRAY_SIZE(wb_auto_reg);
+
+      break;
+    case CAMERA_WB_DAYLIGHT:
+      SEQ_LOG("### CAMERA_WB_DAYLIGHT\n");
+
+      set_reg = (struct msm_camera_i2c_reg_conf *)&wb_daylight_reg[0];
+      set_reg_size = ARRAY_SIZE(wb_daylight_reg);
+
+#ifdef FEATURE_KYOCERA_MCAM_BB_ADJ
+      if( camadjust_flag & CAMADJ_FLAG_WB_DayLight )
+      {
+        set_reg = (struct msm_camera_i2c_reg_conf *)&camadjust_WB_DayLight_conf[0].conf[0];
+        set_reg_size = camadjust_WB_DayLight_conf[0].size;
+      }
+#endif
+
+      break;
+    case CAMERA_WB_FLUORESCENT:
+      SEQ_LOG("### CAMERA_WB_FLUORESCENT\n");
+
+      set_reg = (struct msm_camera_i2c_reg_conf *)&wb_fluorescent_reg[0];
+      set_reg_size = ARRAY_SIZE(wb_fluorescent_reg);
+
+#ifdef FEATURE_KYOCERA_MCAM_BB_ADJ
+      if( camadjust_flag & CAMADJ_FLAG_WB_Fluorescent )
+      {
+        set_reg = (struct msm_camera_i2c_reg_conf *)&camadjust_WB_Fluorescent_conf[0].conf[0];
+        set_reg_size = camadjust_WB_Fluorescent_conf[0].size;
+      }
+#endif
+
+      break;
+    case CAMERA_WB_CLOUDY_DAYLIGHT:
+      SEQ_LOG("### CAMERA_WB_CLOUDY_DAYLIGHT\n");
+
+      set_reg = (struct msm_camera_i2c_reg_conf *)&wb_cloudy_reg[0];
+      set_reg_size = ARRAY_SIZE(wb_cloudy_reg);
+
+#ifdef FEATURE_KYOCERA_MCAM_BB_ADJ
+      if( camadjust_flag & CAMADJ_FLAG_WB_Cloudy )
+      {
+        set_reg = (struct msm_camera_i2c_reg_conf *)&camadjust_WB_Cloudy_conf[0].conf[0];
+        set_reg_size = camadjust_WB_Cloudy_conf[0].size;
+      }
+#endif
+
+      break;
+    case CAMERA_WB_INCANDESCENT:
+      SEQ_LOG("### CAMERA_WB_INCANDESCENT\n");
+
+      set_reg = (struct msm_camera_i2c_reg_conf *)&wb_incandescent_reg[0];
+      set_reg_size = ARRAY_SIZE(wb_incandescent_reg);
+
+#ifdef FEATURE_KYOCERA_MCAM_BB_ADJ
+      if( camadjust_flag & CAMADJ_FLAG_WB_Incandescent )
+      {
+        set_reg = (struct msm_camera_i2c_reg_conf *)&camadjust_WB_Incandescent_conf[0].conf[0];
+        set_reg_size = camadjust_WB_Incandescent_conf[0].size;
+      }
+#endif
+
+      break;
+    default:
+      ERR_LOG("%s Param Err Not Supported Value [%d]\n", __func__, wb);
+      return -EINVAL;
+  }
+
+  rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client, set_reg,
+                                set_reg_size, MSM_CAMERA_I2C_WORD_DATA);
+
+  camsensor_main_drv_ctrl->wb_mode = wb;
+
+  API_LOG("%s: (rc=%d) X \n", __func__, rc);
+  return 0;
+}
+
+int32_t camsensor_main_sensor_set_scene_mode(struct msm_sensor_ctrl_t *s_ctrl, uint16_t scene_mode)
+{
+  int32_t rc = 0;
+
+  struct msm_camera_i2c_reg_conf* set_reg = NULL;
+  uint16_t set_reg_size = 0;
+
+  API_LOG("%s: E \n",__func__ );
+  SEQ_LOG("%s: scene_mode:[%d]\n",__func__ ,scene_mode);
+
+  if( scene_mode >= MSM_CAMERA_BESTSHOT_MAX )
+  {
+    ERR_LOG("[%s] Param Err Over Max Value [%d]\n",__func__ ,scene_mode);
+    return -EINVAL;
+  }
+
+  if( camsensor_main_drv_ctrl->scene_mode == scene_mode )
+  {
+    SEQ_LOG("Same SCENE Value \n");
+    return rc;
+  }
+
+  switch ( scene_mode )
+  {
+    case MSM_CAMERA_BESTSHOT_OFF:
+      SEQ_LOG("### CAMERA_BESTSHOT_OFF\n");
+
+      set_reg = (struct msm_camera_i2c_reg_conf *)&scene_auto_reg[0];
+      set_reg_size = ARRAY_SIZE(scene_auto_reg);
+
+      break;
+    case MSM_CAMERA_BESTSHOT_ACTION:
+      SEQ_LOG("### CAMERA_BESTSHOT_ACTION\n");
+
+      set_reg = (struct msm_camera_i2c_reg_conf *)&scene_action_reg[0];
+      set_reg_size = ARRAY_SIZE(scene_action_reg);
+
+#ifdef FEATURE_KYOCERA_MCAM_BB_ADJ
+      if( camadjust_flag & CAMADJ_FLAG_SC_Action )
+      {
+        set_reg = (struct msm_camera_i2c_reg_conf *)&camadjust_SC_Action_conf[0].conf[0];
+        set_reg_size = camadjust_SC_Action_conf[0].size;
+      }
+#endif
+
+      break;
+    case MSM_CAMERA_BESTSHOT_PORTRAIT:
+      SEQ_LOG("### CAMERA_BESTSHOT_PORTRAIT\n");
+
+      set_reg = (struct msm_camera_i2c_reg_conf *)&scene_portrait_reg[0];
+      set_reg_size = ARRAY_SIZE(scene_portrait_reg);
+
+#ifdef FEATURE_KYOCERA_MCAM_BB_ADJ
+      if( camadjust_flag & CAMADJ_FLAG_SC_Portrait )
+      {
+        set_reg = (struct msm_camera_i2c_reg_conf *)&camadjust_SC_Portrait_conf[0].conf[0];
+        set_reg_size = camadjust_SC_Portrait_conf[0].size;
+      }
+#endif
+
+      break;
+    case MSM_CAMERA_BESTSHOT_LANDSCAPE:
+      SEQ_LOG("### CAMERA_BESTSHOT_LANDSCAPE\n");
+
+      set_reg = (struct msm_camera_i2c_reg_conf *)&scene_landscape_reg[0];
+      set_reg_size = ARRAY_SIZE(scene_landscape_reg);
+
+#ifdef FEATURE_KYOCERA_MCAM_BB_ADJ
+      if( camadjust_flag & CAMADJ_FLAG_SC_Landscape )
+      {
+        set_reg = (struct msm_camera_i2c_reg_conf *)&camadjust_SC_Landscape_conf[0].conf[0];
+        set_reg_size = camadjust_SC_Landscape_conf[0].size;
+      }
+#endif
+
+      break;
+    case MSM_CAMERA_BESTSHOT_NIGHT:
+      SEQ_LOG("### CAMERA_BESTSHOT_NIGHT\n");
+
+      set_reg = (struct msm_camera_i2c_reg_conf *)&scene_night_landscape_reg[0];
+      set_reg_size = ARRAY_SIZE(scene_night_landscape_reg);
+
+#ifdef FEATURE_KYOCERA_MCAM_BB_ADJ
+      if( camadjust_flag & CAMADJ_FLAG_SC_NightLandscape )
+      {
+        set_reg = (struct msm_camera_i2c_reg_conf *)&camadjust_SC_NightLandscape_conf[0].conf[0];
+        set_reg_size = camadjust_SC_NightLandscape_conf[0].size;
+      }
+#endif
+
+      break;
+    case MSM_CAMERA_BESTSHOT_NIGHT_PORTRAIT:
+      SEQ_LOG("### CAMERA_BESTSHOT_NIGHT_PORTRAIT\n");
+
+      set_reg = (struct msm_camera_i2c_reg_conf *)&scene_night_portrait_reg[0];
+      set_reg_size = ARRAY_SIZE(scene_night_portrait_reg);
+
+#ifdef FEATURE_KYOCERA_MCAM_BB_ADJ
+      if( camadjust_flag & CAMADJ_FLAG_SC_NightPortrait )
+      {
+        set_reg = (struct msm_camera_i2c_reg_conf *)&camadjust_SC_NightPortrait_conf[0].conf[0];
+        set_reg_size = camadjust_SC_NightPortrait_conf[0].size;
+      }
+#endif
+
+      break;
+    default:
+      ERR_LOG("%s Param Err Not Supported Value [%d]\n", __func__, scene_mode);
+      return -EINVAL;
+  }
+
+  rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client, set_reg,
+                                set_reg_size, MSM_CAMERA_I2C_WORD_DATA);
+
+  camsensor_main_drv_ctrl->scene_mode = scene_mode;
+
+  API_LOG("%s: (rc=%d) X \n", __func__, rc);
+  return 0;
+}
+
+static int camsensor_main_sensor_mode_init(struct msm_sensor_ctrl_t *s_ctrl,
+           int mode, struct sensor_init_cfg *init_info)
+{
+  uint16_t rc=0;
+  API_LOG("%s E\n", __func__);
+
+  camsensor_main_drv_ctrl = kzalloc(sizeof(camsensor_main_drv_ctrl), GFP_KERNEL);
+  if (!camsensor_main_drv_ctrl)
+  {
+    ERR_LOG("%s camsensor_main_drv_ctrl is NULL!\n", __func__);
+    rc = -ENOMEM;
+    return rc;
+  }
+
+  camsensor_main_drv_ctrl->iso_mode = CAMERA_ISO_TYPE_AUTO;
+  camsensor_main_drv_ctrl->ae_mode = MSM_CAMERA_AEC_FRAME_AVERAGE;
+  camsensor_main_drv_ctrl->wb_mode = CAMERA_WB_AUTO;
+  camsensor_main_drv_ctrl->scene_mode = MSM_CAMERA_BESTSHOT_OFF;
+  camsensor_main_drv_ctrl->focus_mode = MSM_AF_MODE_AUTO;
+
+  camsensor_main_hdr_ctrl_data.manual_exp_start_flag = false;
+  camsensor_main_hdr_ctrl_data.autoalg_bit = 0;
+  camsensor_main_hdr_ctrl_data.lei_exp_val = 0;
+  camsensor_main_hdr_ctrl_data.max_exp_val = 0;
+  camsensor_main_hdr_ctrl_data.base_gain_val = 0;
+
+  camsensor_main_ae_map = 0;
+  camsensor_main_face_weight = ROI_AE_FACE_WEIGHT;
+  camsensor_main_other_weight = ROI_AE_OTHER_WEIGHT;
+  camsensor_main_ae_run_switch = ROI_AE_RUN_INIT_VAL;
+
+#ifdef FEATURE_KYOCERA_MCAM_BB_ADJ
+  camadjust_flag = CAMADJ_FLAG_NONE;
+  camsensor_main_read_adjust_file();
+#endif
+
+  msm_sensor_mode_init(s_ctrl,mode,init_info);
+
+  API_LOG("%s X\n", __func__);
+  return rc;
+}
+
+int32_t camsensor_main_sensor_get_exif_info(struct msm_sensor_ctrl_t *s_ctrl, struct exif_info_sensor_t *exif_info)
+{
+  int32_t rc = 0;
+  uint16_t   us_reg_exposure_msb = 0;
+  uint16_t   us_reg_exposure_lsb = 0;
+  uint32_t   ul_reg_exposure = 0;
+
+  uint16_t   us_reg_ana_gain = 0;
+  uint16_t   us_reg_dig_gain = 0;
+
+  API_LOG("%s: E \n",__func__ );
+
+  msm_camera_i2c_write(camsensor_main_s_ctrl.sensor_i2c_client, REG_READ_PAGE, 0x2000, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_write(camsensor_main_s_ctrl.sensor_i2c_client, REG_READ_ADDR, 0x2140, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_read(camsensor_main_s_ctrl.sensor_i2c_client, 0x0F12, &us_reg_exposure_lsb, MSM_CAMERA_I2C_WORD_DATA);
+
+  msm_camera_i2c_write(camsensor_main_s_ctrl.sensor_i2c_client, REG_READ_PAGE, 0x2000, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_write(camsensor_main_s_ctrl.sensor_i2c_client, REG_READ_ADDR, 0x2142, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_read(camsensor_main_s_ctrl.sensor_i2c_client, 0x0F12, &us_reg_exposure_msb, MSM_CAMERA_I2C_WORD_DATA);
+
+  ul_reg_exposure = (((uint32_t)us_reg_exposure_msb)<< 16) & 0xFFFF0000;
+  ul_reg_exposure |= ((uint32_t)us_reg_exposure_lsb) & 0x0000FFFF;
+
+  DBG_LOG("### DBG: addr = [0x2140], data = [0x%02x]\n", us_reg_exposure_lsb);
+  DBG_LOG("### DBG: addr = [0x2142], data = [0x%02x]\n", us_reg_exposure_msb);
+
+  exif_info->reg_exposure = ul_reg_exposure;
+
+  msm_camera_i2c_write(camsensor_main_s_ctrl.sensor_i2c_client, REG_READ_PAGE, 0x2000, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_write(camsensor_main_s_ctrl.sensor_i2c_client, REG_READ_ADDR, 0x2144, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_read(camsensor_main_s_ctrl.sensor_i2c_client, 0x0F12, &us_reg_ana_gain, MSM_CAMERA_I2C_WORD_DATA);
+  exif_info->reg_ana_gain = us_reg_ana_gain;
+
+  msm_camera_i2c_write(camsensor_main_s_ctrl.sensor_i2c_client, REG_READ_PAGE, 0x2000, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_write(camsensor_main_s_ctrl.sensor_i2c_client, REG_READ_ADDR, 0x2146, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_read(camsensor_main_s_ctrl.sensor_i2c_client, 0x0F12, &us_reg_dig_gain, MSM_CAMERA_I2C_WORD_DATA);
+  exif_info->reg_dig_gain = us_reg_dig_gain;
+
+  DBG_LOG("### DBG:[EXIF_INF]: reg_exposure Addr = [0x2140], Data = [0x%02x]\n",  exif_info->reg_exposure);
+  DBG_LOG("### DBG:[EXIF_INF]: reg_ana_gain Addr = [0x2144], Data = [0x%02x]\n",  exif_info->reg_ana_gain);
+  DBG_LOG("### DBG:[EXIF_INF]: reg_dig_gain Addr = [0x2146], Data = [0x%02x]\n",  exif_info->reg_dig_gain);
+
+  API_LOG("%s: X \n",__func__ );
+  return rc;
+}
+
+int32_t camsensor_main_sensor_set_focus_mode(struct msm_sensor_ctrl_t *s_ctrl, uint16_t focus_mode)
+{
+  int32_t rc = 0;
+  struct msm_camera_i2c_reg_conf* set_reg = NULL;
+  uint16_t set_reg_size = 0;
+  uint16_t read_af = 0x0000;
+  uint16_t af_status = 0x0000;
+  uint16_t read_mode = 0x0000;
+
+  API_LOG("%s: E \n",__func__ );
+  SEQ_LOG("%s: focus_mode:[%d]\n",__func__ ,focus_mode);
+
+  if( focus_mode >= MSM_AF_MODE_MAX )
+  {
+    ERR_LOG("[%s] Param Err Over Max Value [%d]\n",__func__ ,focus_mode);
+    return -EINVAL;
+  }
+
+  msm_camera_i2c_write(s_ctrl->sensor_i2c_client, REG_READ_PAGE, 0x2000, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_write(s_ctrl->sensor_i2c_client, REG_READ_ADDR, 0x02CC, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_read(s_ctrl->sensor_i2c_client, REG_INDIRECT_DATA, &read_af, MSM_CAMERA_I2C_WORD_DATA);
+
+  msm_camera_i2c_write(s_ctrl->sensor_i2c_client, REG_READ_PAGE, 0x2000, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_write(s_ctrl->sensor_i2c_client, REG_READ_ADDR, 0x1F92, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_read(s_ctrl->sensor_i2c_client, REG_INDIRECT_DATA, &af_status, MSM_CAMERA_I2C_WORD_DATA);
+
+  msm_camera_i2c_write(s_ctrl->sensor_i2c_client, REG_READ_PAGE, 0x2000, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_write(s_ctrl->sensor_i2c_client, REG_READ_ADDR, 0x02C8, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_read(s_ctrl->sensor_i2c_client,  REG_INDIRECT_DATA, &read_mode, MSM_CAMERA_I2C_WORD_DATA);
+
+  if((read_af != 0x0000) || (af_status != 0x0000) || (read_mode != 0x0000))
+
+  {
+    ERR_LOG("[%s] AfCmdError:0x%04X AfStatus:0x%04X AfMode:0x%04X\n",__func__,read_af,af_status,read_mode);
+    rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client, af_init_reg,
+                                  ARRAY_SIZE(af_init_reg), MSM_CAMERA_I2C_WORD_DATA);
+    usleep(300000);
+  }
+
+  switch ( focus_mode )
+  {
+    case MSM_AF_MODE_MACRO:
+      SEQ_LOG("### AF_MODE_MACRO\n");
+      set_reg = (struct msm_camera_i2c_reg_conf *)&af_macro_reg[0];
+      set_reg_size = ARRAY_SIZE(af_macro_reg);
+      break;
+    case MSM_AF_MODE_AUTO:
+      SEQ_LOG("### AF_MODE_AUTO\n");
+      set_reg = (struct msm_camera_i2c_reg_conf *)&af_auto_reg[0];
+      set_reg_size = ARRAY_SIZE(af_auto_reg);
+      if(work_enabled == true)
+      {
+        work_enabled = false;
+        cancel_delayed_work(&camsensor_main_af_work);
+      }
+      break;
+    case MSM_AF_MODE_INFINITY:
+      SEQ_LOG("### AF_MODE_INFINITY\n");
+      set_reg = (struct msm_camera_i2c_reg_conf *)&af_infinity_reg[0];
+      set_reg_size = ARRAY_SIZE(af_infinity_reg);
+      break;
+    case MSM_AF_MODE_CAF:
+      SEQ_LOG("### AF_MODE_CAF\n");
+      set_reg = (struct msm_camera_i2c_reg_conf *)&af_continuous_reg[0];
+      set_reg_size = ARRAY_SIZE(af_continuous_reg);
+      break;
+    default:
+      ERR_LOG("%s Param Err Not Supported Value [%d]\n", __func__, focus_mode);
+      return -EINVAL;
+  }
+
+  rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client, set_reg,
+                                set_reg_size, MSM_CAMERA_I2C_WORD_DATA);
+
+  camsensor_main_drv_ctrl->focus_mode = focus_mode;
+
+  if(focus_mode == MSM_AF_MODE_AUTO)
+  {
+
+    af_work_timeout = 3000;
+    work_enabled = true;
+    af_search_status = AF_SEARCH_PREV_FIRST_CHECK;
+    schedule_delayed_work(&camsensor_main_af_work,msecs_to_jiffies(100));
+  }
+
+  API_LOG("%s: (rc=%d) X \n", __func__, rc);
+  return 0;
+}
+
+extern int msm_server_auto_focus_cb(void);
+static void camsensor_main_af_worker(struct work_struct *work)
+{
+
+  uint16_t af_status = 0xDEAD;
+  bool is_next_timer = false;
+
+  API_LOG("%s() E \n", __func__);
+  mutex_lock(camsensor_main_s_ctrl.msm_sensor_mutex);
+
+  if( AF_SEARCH_CANCEL == af_search_status )
+  {
+      work_enabled     = false;
+      af_work_timeout  = 0;
+      mutex_unlock(camsensor_main_s_ctrl.msm_sensor_mutex);
+      if( uc_is_power_on == true ){
+          msm_server_auto_focus_cb();
+      }
+      API_LOG("%s() Focus Cancel !! X \n", __func__);
+      return;
+  }
+
+  DBG_LOG("%s : af_search_status:%d\n", __func__, af_search_status);
+  switch(af_search_status)
+  {
+
+    case AF_SEARCH_PREV_FIRST_CHECK:
+      msm_camera_i2c_write(camsensor_main_s_ctrl.sensor_i2c_client, REG_READ_PAGE, 0x2000, MSM_CAMERA_I2C_WORD_DATA);
+      msm_camera_i2c_write(camsensor_main_s_ctrl.sensor_i2c_client, REG_READ_ADDR, 0x1F92, MSM_CAMERA_I2C_WORD_DATA);
+      msm_camera_i2c_read(camsensor_main_s_ctrl.sensor_i2c_client, REG_INDIRECT_DATA, &af_status, MSM_CAMERA_I2C_WORD_DATA);
+
+      if(af_status == 0x0001)
+      {
+
+        af_search_status = AF_SEARCH_DURING_FIRST_CHECK;
+      }
+      break;
+
+    case AF_SEARCH_DURING_FIRST_CHECK:
+      msm_camera_i2c_write(camsensor_main_s_ctrl.sensor_i2c_client, REG_READ_PAGE, 0x2000, MSM_CAMERA_I2C_WORD_DATA);
+      msm_camera_i2c_write(camsensor_main_s_ctrl.sensor_i2c_client, REG_READ_ADDR, 0x1F92, MSM_CAMERA_I2C_WORD_DATA);
+      msm_camera_i2c_read(camsensor_main_s_ctrl.sensor_i2c_client, REG_INDIRECT_DATA, &af_status, MSM_CAMERA_I2C_WORD_DATA);
+
+      if(af_status != 0x0001)
+      {
+
+        af_search_status = AF_SEARCH_DURING_SECOND_CHECK;
+      }
+      break;
+
+    case AF_SEARCH_DURING_SECOND_CHECK:
+      msm_camera_i2c_write(camsensor_main_s_ctrl.sensor_i2c_client, REG_READ_PAGE, 0x2000, MSM_CAMERA_I2C_WORD_DATA);
+      msm_camera_i2c_write(camsensor_main_s_ctrl.sensor_i2c_client, REG_READ_ADDR, 0x241F, MSM_CAMERA_I2C_WORD_DATA);
+      msm_camera_i2c_read(camsensor_main_s_ctrl.sensor_i2c_client, REG_INDIRECT_DATA, &af_status, MSM_CAMERA_I2C_WORD_DATA);
+
+      if(af_status == 0x0000)
+      {
+
+        af_search_status = AF_SEARCH_DONE;
+      }
+      break;
+
+    default:
+
+      af_work_timeout = 0;
+      break;
+  }
+
+  af_work_timeout -= 100;
+
+  if(af_work_timeout > 0)
+  {
+    is_next_timer = true;
+  }
+  else
+  {
+
+    af_search_status = AF_SEARCH_DONE;
+
+    msm_camera_i2c_write_tbl(camsensor_main_s_ctrl.sensor_i2c_client, af_init_reg,
+                             ARRAY_SIZE(af_init_reg), MSM_CAMERA_I2C_WORD_DATA);
+  }
+
+  DBG_LOG("%s : af_status:%d,af_work_timeout:%d,is_next_timer:%s\n", __func__, af_status, af_work_timeout, (is_next_timer == true) ? "true":"false");
+
+  if(af_search_status == AF_SEARCH_DONE)
+  {
+    work_enabled = false;
+    mutex_unlock(camsensor_main_s_ctrl.msm_sensor_mutex);
+    msm_server_auto_focus_cb();
+  }
+  else if(is_next_timer == true)
+  {
+    schedule_delayed_work(&camsensor_main_af_work,msecs_to_jiffies(100));
+    mutex_unlock(camsensor_main_s_ctrl.msm_sensor_mutex);
+  }
+
+  API_LOG("%s() X \n", __func__);
+
+}
+
+static void camsensor_main_sensor_cancel_focus( void )
+{
+    API_LOG("%s() E \n", __func__);
+
+    SEQ_LOG("%s() af_search_status=[%d] \n", __func__,af_search_status);
+    if( AF_SEARCH_DONE != af_search_status )
+    {
+
+        work_enabled = false;
+        msm_camera_i2c_write_tbl(camsensor_main_s_ctrl.sensor_i2c_client, af_init_reg,
+                                 ARRAY_SIZE(af_init_reg), MSM_CAMERA_I2C_WORD_DATA);
+        af_search_status = AF_SEARCH_CANCEL;
+        DBG_LOG("%s()[DBG]: Complete Cancel !!\n", __func__);
+    }
+
+    API_LOG("%s() X \n", __func__);
+}
+
+int32_t camsensor_main_sensor_get_flash_info(struct msm_sensor_ctrl_t *s_ctrl, struct flash_info_sensor_t *flash_info)
+{
+  int32_t rc = 0;
+
+  uint16_t read_bright_l = 0;
+  uint16_t read_bright_m = 0;
+  uint32_t read_bright_sum = 0;
+
+  API_LOG("%s: E \n",__func__ );
+
+  msm_camera_i2c_write(s_ctrl->sensor_i2c_client, REG_READ_PAGE, 0x2000, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_write(s_ctrl->sensor_i2c_client, REG_READ_ADDR, 0x0554, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_read(s_ctrl->sensor_i2c_client, REG_INDIRECT_DATA, &read_bright_l, MSM_CAMERA_I2C_WORD_DATA);
+
+  msm_camera_i2c_write(s_ctrl->sensor_i2c_client, REG_READ_PAGE, 0x2000, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_write(s_ctrl->sensor_i2c_client, REG_READ_ADDR, 0x0556, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_read(s_ctrl->sensor_i2c_client, REG_INDIRECT_DATA, &read_bright_m, MSM_CAMERA_I2C_WORD_DATA);
+
+  read_bright_sum = ( 0xFFFF0000 & ((uint32_t)read_bright_m << 16)) | ( 0x0000FFFF & (uint32_t)read_bright_l);
+
+  if( FLASH_THRESHOLD_VALUE >= read_bright_sum ){
+    flash_info->is_flash_fired = 1;
+  }else{
+    flash_info->is_flash_fired = 0;
+  }
+
+  DBG_LOG("%s : read_bright_l   = [%d][0x%04x]\n", __func__, read_bright_l, read_bright_l);
+  DBG_LOG("%s : read_bright_m   = [%d][0x%04x]\n", __func__, read_bright_m, read_bright_m);
+  DBG_LOG("%s : read_bright_sum = [%d][0x%08x]\n", __func__, read_bright_sum, read_bright_sum);
+  DBG_LOG("%s : is_flash_fired  = [%d]\n", __func__, flash_info->is_flash_fired);
+
+  API_LOG("%s: X \n",__func__ );
+  return rc;
+}
+
+int32_t camsensor_main_sensor_get_ae_awb_stable_info(struct msm_sensor_ctrl_t *s_ctrl, struct ae_awb_stable_info_sensor_t *stable_info)
+{
+  int32_t rc = 0;
+  uint16_t read_ae = 0x0000;
+  uint16_t read_awb = 0x0000;
+
+  API_LOG("%s: E \n",__func__ );
+
+  msm_camera_i2c_write(s_ctrl->sensor_i2c_client, REG_READ_PAGE, 0x2000, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_write(s_ctrl->sensor_i2c_client, REG_READ_ADDR, 0x21E4, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_read(s_ctrl->sensor_i2c_client, REG_INDIRECT_DATA, &read_ae, MSM_CAMERA_I2C_WORD_DATA);
+
+  msm_camera_i2c_write(s_ctrl->sensor_i2c_client, REG_READ_PAGE, 0x2000, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_write(s_ctrl->sensor_i2c_client, REG_READ_ADDR, 0x21E8, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_read(s_ctrl->sensor_i2c_client, REG_INDIRECT_DATA, &read_awb, MSM_CAMERA_I2C_WORD_DATA);
+
+  DBG_LOG("%s : read_ae  = [%d]\n", __func__, read_ae);
+  DBG_LOG("%s : read_awb = [%d]\n", __func__, read_awb);
+
+  stable_info->ae  = read_ae;
+  stable_info->awb = read_awb;
+
+  API_LOG("%s: X \n",__func__ );
+  return rc;
+}
+
+int32_t camsensor_main_sensor_set_flash_reg(struct msm_sensor_ctrl_t *s_ctrl, uint32_t flash_reg_mode)
+{
+  int32_t rc = 0;
+  struct msm_camera_i2c_reg_conf* set_reg = NULL;
+  uint16_t set_reg_size = 0;
+
+  API_LOG("%s: E \n",__func__ );
+  DBG_LOG("%s: flash_reg_mode:[%d]\n",__func__ ,flash_reg_mode);
+
+  if( flash_reg_mode >= MSM_FLASH_REG_MAX )
+  {
+    ERR_LOG("[%s] Param Err Over Max Value [%d]\n",__func__ ,flash_reg_mode);
+    return -EINVAL;
+  }
+
+  switch ( flash_reg_mode )
+  {
+    case MSM_FLASH_REG_PRESTART:
+      DBG_LOG("### FLASH_REG_PRESTART\n");
+
+      if( camsensor_main_drv_ctrl->wb_mode == CAMERA_WB_AUTO )
+      {
+        set_reg = (struct msm_camera_i2c_reg_conf *)&flash_reg_prestart_for_AutoWB[0];
+        set_reg_size = ARRAY_SIZE(flash_reg_prestart_for_AutoWB);
+      }
+      else
+      {
+        set_reg = (struct msm_camera_i2c_reg_conf *)&flash_reg_prestart_for_ManualWB[0];
+        set_reg_size = ARRAY_SIZE(flash_reg_prestart_for_ManualWB);
+      }
+
+      break;
+    case MSM_FLASH_REG_PREEND:
+      DBG_LOG("### FLASH_REG_PREEND\n");
+      set_reg = (struct msm_camera_i2c_reg_conf *)&flash_reg_preend[0];
+      set_reg_size = ARRAY_SIZE(flash_reg_preend);
+      break;
+    case MSM_FLASH_REG_START:
+      DBG_LOG("### FLASH_REG_START\n");
+      set_reg = (struct msm_camera_i2c_reg_conf *)&flash_reg_start[0];
+      set_reg_size = ARRAY_SIZE(flash_reg_start);
+      break;
+    case MSM_FLASH_REG_END:
+      DBG_LOG("### FLASH_REG_END\n");
+      set_reg = (struct msm_camera_i2c_reg_conf *)&flash_reg_end[0];
+      set_reg_size = ARRAY_SIZE(flash_reg_end);
+      break;
+    case MSM_FLASH_REG_AEAWB_LOCK_ON:
+
+      return 0;
+    case MSM_FLASH_REG_AEAWB_LOCK_OFF:
+
+      return 0;
+    default:
+      ERR_LOG("%s Param Err Not Supported Value [%d]\n", __func__, flash_reg_mode);
+      return -EINVAL;
+  }
+
+  rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client, set_reg,
+                                set_reg_size, MSM_CAMERA_I2C_WORD_DATA);
+
+  API_LOG("%s: (rc=%d) X \n", __func__, rc);
+  return 0;
+}
+
+int32_t camsensor_main_sensor_set_roi_af_mode(struct msm_sensor_ctrl_t *s_ctrl, struct roi_af_area_info_sensor_t *roi_info)
+{
+  int32_t rc = 0;
+
+  struct msm_camera_i2c_reg_conf roi_reg[] =
+  {
+    {0x0028,0x2000},
+    {0x002A,0x02D0},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0x0001},
+  };
+
+  API_LOG("%s: E \n",__func__ );
+  DBG_LOG("%s: area 1st x[%d] y[%d] dx[%d] dy[%d]\n",__func__ ,
+    roi_info->window_area[0].x,
+    roi_info->window_area[0].y,
+    roi_info->window_area[0].dx,
+    roi_info->window_area[0].dy
+    );
+  DBG_LOG("%s: area 2nd x[%d] y[%d] dx[%d] dy[%d]\n",__func__ ,
+    roi_info->window_area[1].x,
+    roi_info->window_area[1].y,
+    roi_info->window_area[1].dx,
+    roi_info->window_area[1].dy
+    );
+
+  roi_reg[2].reg_data = roi_info->window_area[0].x;
+  roi_reg[3].reg_data = roi_info->window_area[0].y;
+  roi_reg[4].reg_data = roi_info->window_area[0].dx;
+  roi_reg[5].reg_data = roi_info->window_area[0].dy;
+  roi_reg[6].reg_data = roi_info->window_area[1].x;
+  roi_reg[7].reg_data = roi_info->window_area[1].y;
+  roi_reg[8].reg_data = roi_info->window_area[1].dx;
+  roi_reg[9].reg_data = roi_info->window_area[1].dy;
+
+  rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client, roi_reg,
+                                ARRAY_SIZE(roi_reg), MSM_CAMERA_I2C_WORD_DATA);
+
+  API_LOG("%s: X \n",__func__ );
+  return rc;
+}
+
+static  struct msm_camera_i2c_reg_conf roi_area_write_reg[] =
+  {
+    {0x0028,0x2000},
+    {0x002A,0x0B2E},
+
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+    {0x0F12,0xDEAD},
+
+    {0x002A,0x0C3E},
+    {0x0F12,0x0001},
+
+};
+
+int32_t camsensor_main_sensor_set_roi_ae_mode(struct msm_sensor_ctrl_t *s_ctrl, struct roi_ae_area_info_sensor_t *roi_info)
+{
+  int32_t rc = 0;
+  uint16_t set_reg_size = 0;
+  struct msm_camera_i2c_reg_conf* set_reg = NULL;
+
+  API_LOG("%s: E \n",__func__ );
+
+  if (camsensor_main_ae_run_switch == ROI_AE_RUN_OFF) {
+    return 0;
+  }
+
+  if(camsensor_main_ae_map == roi_info->ae_area.ae_map) {
+    return 0;
+  }
+
+  camsensor_main_ae_map = roi_info->ae_area.ae_map;
+
+  if (roi_info->ae_area.ae_map == 0) {
+    SEQ_LOG("%s: set return ae mode:[%d]\n",__func__ ,camsensor_main_drv_ctrl->ae_mode);
+    switch ( camsensor_main_drv_ctrl->ae_mode )
+    {
+      case MSM_CAMERA_AEC_FRAME_AVERAGE:
+      SEQ_LOG("### CAM_AEC_FRAME_AVERAGE\n");
+        set_reg = (struct msm_camera_i2c_reg_conf *)&ae_mode_average_reg[0];
+        set_reg_size = ARRAY_SIZE(ae_mode_average_reg);
+        break;
+      case MSM_CAMERA_AEC_CENTER_WEIGHTED:
+        SEQ_LOG("### CAM_AEC_CENTER_WEIGHTED\n");
+        set_reg = (struct msm_camera_i2c_reg_conf *)&ae_mode_center_reg[0];
+        set_reg_size = ARRAY_SIZE(ae_mode_center_reg);
+        break;
+      case MSM_CAMERA_AEC_SPOT_METERING:
+        SEQ_LOG("### CAM_AEC_SPOT_METERING\n");
+        set_reg = (struct msm_camera_i2c_reg_conf *)&ae_mode_spot_reg[0];
+        set_reg_size = ARRAY_SIZE(ae_mode_spot_reg);
+        break;
+      default:
+        ERR_LOG("%s Param Err Not Supported Value [%d]\n", __func__, camsensor_main_drv_ctrl->ae_mode);
+        return -EINVAL;
+    }
+    rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client, set_reg,
+                                  set_reg_size, MSM_CAMERA_I2C_WORD_DATA);
+  }
+
+  else
+  {
+    int32_t cnt;
+    uint64_t chk_bit;
+
+    for(cnt=2;cnt<34;cnt++) {
+      roi_area_write_reg[cnt].reg_data = (camsensor_main_other_weight | (camsensor_main_other_weight << 8));
+    }
+
+    chk_bit = (uint64_t)0x01;
+    for(cnt=0;cnt<32;cnt++) {
+      if (roi_info->ae_area.ae_map & chk_bit) {
+        roi_area_write_reg[cnt+2].reg_data = ((roi_area_write_reg[cnt+2].reg_data & 0xff00) | camsensor_main_face_weight);
+        DBG_LOG("###CAMERA DEBUG###: roi_area_write_reg data0[0x%4x]\n", roi_area_write_reg[cnt+2].reg_data);
+      }
+      chk_bit = (chk_bit << 1);
+      if (roi_info->ae_area.ae_map & chk_bit) {
+        roi_area_write_reg[cnt+2].reg_data = ((roi_area_write_reg[cnt+2].reg_data & 0x00ff) | (camsensor_main_face_weight << 8));
+        DBG_LOG("###CAMERA DEBUG###: roi_area_write_reg data1[0x%4x]\n", roi_area_write_reg[cnt+2].reg_data);
+      }
+      chk_bit = (chk_bit << 1);
+    }
+    rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client, roi_area_write_reg,
+                                  ARRAY_SIZE(roi_area_write_reg), MSM_CAMERA_I2C_WORD_DATA);
+
+#ifdef DBG_LOG_SWITCH
+    {
+        int32_t cnt;
+        for(cnt = 0; cnt < ARRAY_SIZE(roi_area_write_reg); cnt++)
+        {
+            DBG_LOG("###CAMERA DEBUG###: roi_area_write_reg addr0[0x%4x] data0[0x%4x]\n", roi_area_write_reg[cnt].reg_addr,roi_area_write_reg[cnt].reg_data);
+        }
+    }
+#endif
+  }
+
+  API_LOG("%s: X \n",__func__ );
+  return 0;
+}
+
+int32_t camsensor_main_setting1(struct msm_sensor_ctrl_t *s_ctrl, int update_type, int res)
+{
+  int32_t rc = 0;
+
+  API_LOG("%s E\n", __func__);
+
+  if (update_type == MSM_SENSOR_REG_INIT)
+  {
+    s_ctrl->func_tbl->sensor_stop_stream(s_ctrl);
+
+    camsensor_main_write_init_settings(s_ctrl);
+  }
+  else if (update_type == MSM_SENSOR_UPDATE_PERIODIC)
+  {
+    msm_sensor_write_conf_array(s_ctrl->sensor_i2c_client,
+                                s_ctrl->msm_sensor_reg->mode_settings, res);
+
+    msleep(30);
+
+    v4l2_subdev_notify(&s_ctrl->sensor_v4l2_subdev,
+                       NOTIFY_PCLK_CHANGE,
+                       &s_ctrl->sensordata->pdata->ioclk.vfe_clk_rate);
+  }
+
+  API_LOG("%s X\n", __func__);
+
+  return rc;
+}
+
+int32_t camsensor_main_setting(struct msm_sensor_ctrl_t *s_ctrl, int update_type, int res)
+{
+  int32_t rc = 0;
+
+  API_LOG("%s E\n", __func__);
+
+  if (update_type == MSM_SENSOR_REG_INIT)
+  {
+
+    camsensor_main_write_init_settings(s_ctrl);
+
+    rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client, af_init_reg,
+                                  ARRAY_SIZE(af_init_reg), MSM_CAMERA_I2C_WORD_DATA);
+
+  }
+  else if (update_type == MSM_SENSOR_UPDATE_PERIODIC)
+  {
+
+    camsensor_main_write_res_settings(s_ctrl, res);
+
+    if(res == MSM_SENSOR_RES_QTR)
+    {
+
+      if(camsensor_main_drv_ctrl->focus_mode == MSM_AF_MODE_AUTO)
+      {
+        rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client, af_init_reg,
+                                      ARRAY_SIZE(af_init_reg), MSM_CAMERA_I2C_WORD_DATA);
+        usleep(300000);
+      }
+      else if(camsensor_main_drv_ctrl->focus_mode == MSM_AF_MODE_CAF)
+      {
+        rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client, af_init_reg,
+                                      ARRAY_SIZE(af_init_reg), MSM_CAMERA_I2C_WORD_DATA);
+        usleep(300000);
+        rc |= msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client, af_continuous_reg,
+                                       ARRAY_SIZE(af_continuous_reg), MSM_CAMERA_I2C_WORD_DATA);
+      }
+
+    }
+
+    v4l2_subdev_notify(&s_ctrl->sensor_v4l2_subdev,
+                       NOTIFY_PCLK_CHANGE,
+                       &s_ctrl->msm_sensor_reg->output_settings[res].op_pixel_clk);
+  }
+
+  API_LOG("%s X\n", __func__);
+
+  return rc;
+}
+
+void camsensor_main_start_stream(struct msm_sensor_ctrl_t *s_ctrl)
+{
+
+  bool is_output = false;
+  uint16_t data;
+  int timeout_cnt = 0;
+
+  uint16_t PreviewOutput;
+  uint16_t CaptureOutput;
+
+  API_LOG("%s E\n", __func__);
+
+  msm_camera_i2c_write(s_ctrl->sensor_i2c_client,0x002C,0x2000,MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_write(s_ctrl->sensor_i2c_client,0x002E,0x0278,MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_read(s_ctrl->sensor_i2c_client,0x0F12,&PreviewOutput, MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_write(s_ctrl->sensor_i2c_client,0x002E,0x027C,MSM_CAMERA_I2C_WORD_DATA);
+  msm_camera_i2c_read(s_ctrl->sensor_i2c_client,0x0F12,&CaptureOutput, MSM_CAMERA_I2C_WORD_DATA);
+
+  if(!(((PreviewOutput == 0) && (CaptureOutput == 1) && (s_ctrl->curr_res == MSM_SENSOR_RES_FULL)) ||
+      ((PreviewOutput == 1) && (CaptureOutput == 0) && (s_ctrl->curr_res == MSM_SENSOR_RES_QTR))))
+  {
+    DBG_LOG("%s:PrevOut:0x%04X, CapOut:0x%04X, RES:%d", __func__, PreviewOutput, CaptureOutput, s_ctrl->curr_res);
+    camsensor_main_write_res_settings(s_ctrl, s_ctrl->curr_res);
+  }
+
+  msm_camera_i2c_write_tbl(
+    s_ctrl->sensor_i2c_client,
+    s_ctrl->msm_sensor_reg->start_stream_conf,
+    s_ctrl->msm_sensor_reg->start_stream_conf_size,
+    s_ctrl->msm_sensor_reg->default_data_type);
+
+  do
+  {
+
+    msm_camera_i2c_write(s_ctrl->sensor_i2c_client,0x002C,0x2000,MSM_CAMERA_I2C_WORD_DATA);
+    msm_camera_i2c_write(s_ctrl->sensor_i2c_client,0x002E,0x0564,MSM_CAMERA_I2C_WORD_DATA);
+    msm_camera_i2c_read(s_ctrl->sensor_i2c_client,0x0F12,&data, MSM_CAMERA_I2C_WORD_DATA);
+
+    DBG_LOG("%s:CaptureDone:0x%04X, curr_res:%d", __func__, data, (int)(s_ctrl->curr_res));
+
+    if(((data == 1) && (s_ctrl->curr_res == MSM_SENSOR_RES_FULL)) ||
+       ((data == 0) && (s_ctrl->curr_res == MSM_SENSOR_RES_QTR)))
+    {
+      is_output = true;
+    }
+
+    if(is_output == false)
+    {
+      usleep_range(1000,1000);
+      timeout_cnt++;
+    }
+  }while((is_output == false) && (timeout_cnt < 500));
+
+  API_LOG("%s X\n", __func__);
+}
+
+void camsensor_main_stop_stream(struct msm_sensor_ctrl_t *s_ctrl)
+{
+  bool is_stop = false;
+  uint16_t PreviewOutput;
+  uint16_t CaptureOutput;
+  int timeout_cnt = 0;
+
+  API_LOG("%s E\n", __func__);
+
+  msm_camera_i2c_write_tbl(
+    s_ctrl->sensor_i2c_client,
+    s_ctrl->msm_sensor_reg->stop_stream_conf,
+    s_ctrl->msm_sensor_reg->stop_stream_conf_size,
+    s_ctrl->msm_sensor_reg->default_data_type);
+
+  do
+  {
+
+    msm_camera_i2c_write(s_ctrl->sensor_i2c_client,0x002C,0x2000,MSM_CAMERA_I2C_WORD_DATA);
+    msm_camera_i2c_write(s_ctrl->sensor_i2c_client,0x002E,0x027A,MSM_CAMERA_I2C_WORD_DATA);
+    msm_camera_i2c_read(s_ctrl->sensor_i2c_client,0x0F12,&PreviewOutput, MSM_CAMERA_I2C_WORD_DATA);
+    msm_camera_i2c_write(s_ctrl->sensor_i2c_client,0x002E,0x027E,MSM_CAMERA_I2C_WORD_DATA);
+    msm_camera_i2c_read(s_ctrl->sensor_i2c_client,0x0F12,&CaptureOutput, MSM_CAMERA_I2C_WORD_DATA);
+
+    DBG_LOG("%s:PreviewOutput:0x%04X, CaptureOutput:0x%04X", __func__, PreviewOutput, CaptureOutput);
+
+    if((PreviewOutput == 0) && (CaptureOutput == 0))
+    {
+      is_stop = true;
+    }
+    else
+    {
+      usleep_range(10000,10000);
+      timeout_cnt += 10;
+    }
+  }while((is_stop == false) && (timeout_cnt < 200));
+
+  API_LOG("%s X\n", __func__);
+}
+
+int32_t camsensor_main_sensor_power_up(struct msm_sensor_ctrl_t *s_ctrl)
+{
+  int32_t rc = 0;
+
+  API_LOG("%s E\n", __func__);
+
+  DBG_LOG("camsensor_main_sensor_power_up in\n");
+
+  DBG_LOG("msm_sensor_gpio_conf\n");
+  rc = msm_sensor_gpio_conf(s_ctrl, MSM_SENSOR_GPIO_CONF_ON);
+  if( rc )
+  {
+    ERR_LOG("%s msm_sensor_gpio_conf error rc:%d\n", __func__,rc);
+    return -ENODEV;
+  }
+
+  DBG_LOG("msm_sensor_vreg_ctl VDDIO(l9)\n");
+  msm_sensor_vreg_ctl("8038_l9", true, 1800000, 1800000);
+
+  DBG_LOG("gpio_direction_output(73, 0)\n");
+  rc = gpio_direction_output(73, 0);
+  if( rc )
+  {
+    ERR_LOG("%s gpio_direction_output gpio 73 H->L error rc:%d\n", __func__,rc);
+    return -ENODEV;
+  }
+
+  if( OEM_get_board() == OEM_BOARD_WS1_TYPE )
+  {
+
+    DBG_LOG("msm_sensor_vreg_ctl VCM_PWDN(lvs2)\n");
+    msm_sensor_vreg_ctl("8038_lvs2", true, 0, 0);
+  }
+
+  DBG_LOG("usleep_range(1,1)\n");
+  usleep_range(1,1);
+
+  DBG_LOG("msm_sensor_vreg_ctl AVDD(l17)\n");
+  msm_sensor_vreg_ctl("8038_l17", true, 2800000, 2800000);
+
+  DBG_LOG("usleep_range(1,1)\n");
+  usleep_range(1,1);
+
+  DBG_LOG("CAM_MCLK(24MHz) ON\n");
+  msm_cam_clk_enable(&s_ctrl->sensor_i2c_client->client->dev,
+                     cam_clk_info,&camio_cam_clk, ARRAY_SIZE(cam_clk_info), 1);
+
+  DBG_LOG("usleep_range(100,100)\n");
+  usleep_range(100,100);
+
+  DBG_LOG("gpio_direction_output(54, 1)\n");
+  rc = gpio_direction_output(54, 1);
+  if( rc )
+  {
+    ERR_LOG("%s gpio_direction_output gpio 54 L->H error rc:%d\n", __func__,rc);
+    return -ENODEV;
+  }
+
+  DBG_LOG("usleep_range(100,100)\n");
+  usleep_range(100,100);
+
+  DBG_LOG("gpio_direction_output(55, 1)\n");
+  rc = gpio_direction_output(55, 1);
+  if( rc )
+  {
+    ERR_LOG("%s gpio_direction_output gpio 55 L->H error rc:%d\n", __func__,rc);
+    return -ENODEV;
+  }
+
+  DBG_LOG("usleep_range(12000,12000)\n");
+  usleep_range(12000,12000);
+
+  uc_is_power_on = true;
+
+  return rc;
+}
+
+int32_t camsensor_main_sensor_power_down(struct msm_sensor_ctrl_t *s_ctrl)
+{
+  int32_t rc = 0;
+
+  DBG_LOG("camsensor_main_sensor_power_down in\n");
+
+#ifdef FEATURE_KYOCERA_MCAM_BB_ADJ
+  if( camadjust_flag & CAMADJ_FLAG_INIT )
+  {
+    vfree( camadjust_init_conf[0].conf);
+  }
+  if( camadjust_flag & CAMADJ_FLAG_ISO_100 )
+  {
+    vfree( camadjust_ISO_100_conf[0].conf);
+  }
+  if( camadjust_flag & CAMADJ_FLAG_ISO_200 )
+  {
+    vfree( camadjust_ISO_200_conf[0].conf);
+  }
+  if( camadjust_flag & CAMADJ_FLAG_ISO_400 )
+  {
+    vfree( camadjust_ISO_400_conf[0].conf);
+  }
+  if( camadjust_flag & CAMADJ_FLAG_ISO_800 )
+  {
+    vfree( camadjust_ISO_800_conf[0].conf);
+  }
+  if( camadjust_flag & CAMADJ_FLAG_WB_DayLight )
+  {
+    vfree( camadjust_WB_DayLight_conf[0].conf);
+  }
+  if( camadjust_flag & CAMADJ_FLAG_WB_Cloudy )
+  {
+    vfree( camadjust_WB_Cloudy_conf[0].conf);
+  }
+  if( camadjust_flag & CAMADJ_FLAG_WB_Incandescent )
+  {
+    vfree( camadjust_WB_Incandescent_conf[0].conf);
+  }
+  if( camadjust_flag & CAMADJ_FLAG_WB_Fluorescent )
+  {
+    vfree( camadjust_WB_Fluorescent_conf[0].conf);
+  }
+  if( camadjust_flag & CAMADJ_FLAG_SC_Portrait )
+  {
+    vfree( camadjust_SC_Portrait_conf[0].conf);
+  }
+  if( camadjust_flag & CAMADJ_FLAG_SC_Landscape )
+  {
+    vfree( camadjust_SC_Landscape_conf[0].conf);
+  }
+  if( camadjust_flag & CAMADJ_FLAG_SC_NightPortrait )
+  {
+    vfree( camadjust_SC_NightPortrait_conf[0].conf);
+  }
+  if( camadjust_flag & CAMADJ_FLAG_SC_NightLandscape )
+  {
+    vfree( camadjust_SC_NightLandscape_conf[0].conf);
+  }
+  if( camadjust_flag & CAMADJ_FLAG_SC_Action )
+  {
+    vfree( camadjust_SC_Action_conf[0].conf);
+  }
+#endif
+
+  uc_is_power_on = false;
+
+  camsensor_main_sensor_cancel_focus();
+
+  camera_flash_flashoff();
+
+  DBG_LOG("usleep_range(200000,200000)\n");
+  usleep_range(200000,200000);
+
+  DBG_LOG("usleep_range(50,50)\n");
+  usleep_range(50,50);
+
+  DBG_LOG("gpio_direction_output(55, 0)\n");
+  rc = gpio_direction_output(55, 0);
+  if( rc )
+  {
+    ERR_LOG("%s gpio_direction_output gpio 55 H->L error rc:%d\n", __func__,rc);
+    return -ENODEV;
+  }
+
+  DBG_LOG("usleep_range(200,200)\n");
+  usleep_range(200,200);
+
+  DBG_LOG("gpio_direction_output(54, 0)\n");
+  rc = gpio_direction_output(54, 0);
+  if( rc )
+  {
+    ERR_LOG("%s gpio_direction_output gpio 54 H->L error rc:%d\n", __func__,rc);
+    return -ENODEV;
+  }
+
+  DBG_LOG("usleep_range(50,50)\n");
+  usleep_range(50,50);
+
+  msm_cam_clk_enable(&s_ctrl->sensor_i2c_client->client->dev,
+                     cam_clk_info,&camio_cam_clk, ARRAY_SIZE(cam_clk_info), 0);
+
+  DBG_LOG("usleep_range(200,200)\n");
+  usleep_range(200,200);
+
+  DBG_LOG("msm_sensor_vreg_ctl AVDD(l17)\n");
+  msm_sensor_vreg_ctl("8038_l17", false, 2800000, 2800000);
+
+  DBG_LOG("usleep_range(1,1)\n");
+  usleep_range(1,1);
+
+  if( OEM_get_board() == OEM_BOARD_WS1_TYPE )
+  {
+
+    DBG_LOG("msm_sensor_vreg_ctl VCM_PWDN(lvs2)\n");
+    msm_sensor_vreg_ctl("8038_lvs2", false, 0, 0);
+  }
+
+  DBG_LOG("gpio_direction_output(73, 1)\n");
+  rc = gpio_direction_output(73, 1);
+  if( rc )
+  {
+    ERR_LOG("%s gpio_direction_output gpio 73 L->H error rc:%d\n", __func__,rc);
+    return -ENODEV;
+  }
+
+  DBG_LOG("msm_sensor_vreg_ctl VDDIO(l9)\n");
+  msm_sensor_vreg_ctl("8038_l9", false, 1800000, 1800000);
+
+  rc = msm_sensor_gpio_conf(s_ctrl, MSM_SENSOR_GPIO_CONF_OFF);
+  if( rc )
+  {
+    ERR_LOG("%s msm_sensor_gpio_conf error rc:%d\n", __func__,rc);
+    return -ENODEV;
+  }
+
+  return 0;
+}
+
+#ifdef FEATURE_KYOCERA_MCAM_BB_ADJ
+static void camsensor_main_read_adjust_file( void )
+{
+  uint32_t data_code = 0;
+  uint32_t data_cnt  = 0;
+  unsigned char temp_buf[32];
+  struct file *file_p;
+  int read_cnt;
+  uint32_t i  = 0;
+  struct msm_camera_i2c_conf_array *temp_p = NULL;
+  mm_segment_t old_fs = get_fs();
+
+  ADJ_LOG("[CAMADJ_LOG]Camera AdjustFile ReadStart\n");
+
+  memset(&temp_buf[0],0x00,sizeof(temp_buf));
+  sprintf( temp_buf, "/data/CAM_ADJ.bin" );
+  set_fs(KERNEL_DS);
+  file_p = filp_open( temp_buf, O_RDONLY, 0);
+  if( IS_ERR(file_p) )
+  {
+    ADJ_LOG("[CAMADJ_LOG]AdjustFile Open Failed!\n");
+    return;
+  }
+
+  while( TRUE )
+  {
+
+    read_cnt = file_p->f_op->read( file_p, temp_buf, 4, &(file_p->f_pos) );
+    data_code = (uint32_t)temp_buf[0] | ((uint32_t)temp_buf[1] << 8) | ((uint32_t)temp_buf[2] << 16) | ((uint32_t)temp_buf[3] << 24);
+    ADJ_LOG("[CAMADJ_LOG] Data Code[%08x]\n", data_code);
+    if( data_code == CAMADJ_FLAG_FILE_END )
+    {
+      break;
+    }
+    else if( data_code == CAMADJ_FLAG_INIT )
+    {
+      temp_p = &camadjust_init_conf[0];
+    }
+    else if( data_code == CAMADJ_FLAG_ISO_100 )
+    {
+      temp_p = &camadjust_ISO_100_conf[0];
+    }
+    else if( data_code == CAMADJ_FLAG_ISO_200 )
+    {
+      temp_p = &camadjust_ISO_200_conf[0];
+    }
+    else if( data_code == CAMADJ_FLAG_ISO_400 )
+    {
+      temp_p = &camadjust_ISO_400_conf[0];
+    }
+    else if( data_code == CAMADJ_FLAG_ISO_800 )
+    {
+      temp_p = &camadjust_ISO_800_conf[0];
+    }
+    else if( data_code == CAMADJ_FLAG_WB_DayLight )
+    {
+      temp_p = &camadjust_WB_DayLight_conf[0];
+    }
+    else if( data_code == CAMADJ_FLAG_WB_Cloudy )
+    {
+      temp_p = &camadjust_WB_Cloudy_conf[0];
+    }
+    else if( data_code == CAMADJ_FLAG_WB_Incandescent )
+    {
+      temp_p = &camadjust_WB_Incandescent_conf[0];
+    }
+    else if( data_code == CAMADJ_FLAG_WB_Fluorescent )
+    {
+      temp_p = &camadjust_WB_Fluorescent_conf[0];
+    }
+    else if( data_code == CAMADJ_FLAG_SC_Portrait )
+    {
+      temp_p = &camadjust_SC_Portrait_conf[0];
+    }
+    else if( data_code == CAMADJ_FLAG_SC_Landscape )
+    {
+      temp_p = &camadjust_SC_Landscape_conf[0];
+    }
+    else if( data_code == CAMADJ_FLAG_SC_NightPortrait )
+    {
+      temp_p = &camadjust_SC_NightPortrait_conf[0];
+    }
+    else if( data_code == CAMADJ_FLAG_SC_NightLandscape )
+    {
+      temp_p = &camadjust_SC_NightLandscape_conf[0];
+    }
+    else if( data_code == CAMADJ_FLAG_SC_Action )
+    {
+      temp_p = &camadjust_SC_Action_conf[0];
+    }
+
+    read_cnt = file_p->f_op->read( file_p, temp_buf, 4, &(file_p->f_pos) );
+    data_cnt = (uint32_t)temp_buf[0] | ((uint32_t)temp_buf[1] << 8) | ((uint32_t)temp_buf[2] << 16) | ((uint32_t)temp_buf[3] << 24);
+    ADJ_LOG("[CAMADJ_LOG] Data Count[%d]\n", data_cnt);
+
+    temp_p->conf = (struct msm_camera_i2c_reg_conf *)vmalloc(( data_cnt * sizeof(struct msm_camera_i2c_reg_conf)) + 1 );
+    temp_p->size = (uint16_t)data_cnt;
+    for( i = 0; i < data_cnt; i++ )
+    {
+      read_cnt = file_p->f_op->read(file_p, temp_buf, 4, &(file_p->f_pos) );
+      temp_p->conf[i].reg_addr = (uint16_t)temp_buf[0] | ((uint16_t)temp_buf[1] << 8);
+      temp_p->conf[i].reg_data = (uint16_t)temp_buf[2] | ((uint16_t)temp_buf[3] << 8);
+      temp_p->conf[i].dt = MSM_CAMERA_I2C_WORD_DATA;
+    }
+    camadjust_flag |= data_code;
+  }
+
+  filp_close(file_p, NULL);
+  set_fs(old_fs);
+
+  ADJ_LOG("[CAMADJ_LOG]Camera AdjustFile ReadEnd\n");
+  return;
+}
+#endif
+
+#define AUTOALG_ENBIT_MANUALEXP_MASK (0x0006)
+
+static const struct msm_camera_i2c_reg_conf camsensor_main_manual_exp_read_alg_reg_tbl[] = {
+    {0x002C,0x2000},
+    {0x002E,0x051C},
+};
+
+static const struct msm_camera_i2c_reg_conf camsensor_main_manual_exp_read_again_tbl[] = {
+    {0x002C,0x2000},
+    {0x002E,0x2144},
+};
+
+static const struct msm_camera_i2c_reg_conf camsensor_main_manual_exp_read_dgain_tbl[] = {
+    {0x002C,0x2000},
+    {0x002E,0x2146},
+};
+
+static const struct msm_camera_i2c_reg_conf camsensor_main_manual_exp_read_total_gain_tbl[] = {
+    {0x002C,0x2000},
+    {0x002E,0x04EE},
+};
+
+static const struct msm_camera_i2c_reg_conf camsensor_main_manual_exp_read_lei_reg_tbl[] = {
+    {0x002C,0x2000},
+    {0x002E,0x2140},
+};
+
+static const struct msm_camera_i2c_reg_conf camsensor_main_manual_exp_read_lei_reg_high_tbl[] = {
+    {0x002C,0x2000},
+    {0x002E,0x2142},
+};
+
+int32_t camsensor_main_sensor_start_manual_exposure(struct msm_sensor_ctrl_t *s_ctrl)
+{
+
+    int32_t rc = 0;
+    uint16_t read_alg_data;
+    uint16_t write_alg_data;
+
+    API_LOG("%s: E\n",__func__);
+
+    if (camsensor_main_hdr_ctrl_data.manual_exp_start_flag){
+      DBG_LOG("%s: manual exp started already\n",__func__);
+      return 0;
+    }
+
+    rc = 0;
+    read_alg_data = 0;
+    rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client,
+              (struct msm_camera_i2c_reg_conf *)&camsensor_main_manual_exp_read_alg_reg_tbl[0],
+              ARRAY_SIZE(camsensor_main_manual_exp_read_alg_reg_tbl),
+              MSM_CAMERA_I2C_WORD_DATA);
+    if( rc < 0 )
+    {
+        ERR_LOG("%s setting reg msm_camera_i2c_write_tbl error rc:%d\n", __func__,rc);
+        ERR_LOG("%s :X can not manual exposure start\n", __func__);
+        return -ENODEV;
+    }
+
+    rc = msm_camera_i2c_read(s_ctrl->sensor_i2c_client,
+        0x0F12,
+        &read_alg_data,
+        MSM_CAMERA_I2C_WORD_DATA);
+    if( rc < 0 )
+    {
+        ERR_LOG("%s setting reg msm_camera_i2c_read error rc:%d\n", __func__,rc);
+        ERR_LOG("%s :X can not manual exposure start\n", __func__);
+        return -ENODEV;
+    }
+
+    DBG_LOG("###CAMERA DEBUG###:READ  AutoAlgEnBits    [0x%04x] \n", read_alg_data);
+
+    {
+        struct msm_camera_i2c_reg_conf write_alg_reg_tbl[] = {
+            {0x0028,0x2000},
+            {0x002A,0x051C},
+            {0x0F12,0xDEAD},
+        };
+        write_alg_data = 0;
+        camsensor_main_hdr_ctrl_data.autoalg_bit = read_alg_data & AUTOALG_ENBIT_MANUALEXP_MASK;
+        write_alg_data = read_alg_data & (~AUTOALG_ENBIT_MANUALEXP_MASK);
+        write_alg_reg_tbl[2].reg_data = write_alg_data;
+
+        rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client,
+                 &write_alg_reg_tbl[0],
+                 ARRAY_SIZE(write_alg_reg_tbl),
+                 MSM_CAMERA_I2C_WORD_DATA);
+        if( rc < 0 )
+        {
+            camsensor_main_hdr_ctrl_data.manual_exp_start_flag = false;
+            ERR_LOG("%s setting reg msm_camera_i2c_write_tbl error rc:%d\n", __func__,rc);
+            ERR_LOG("%s :X can not manual exposure start\n", __func__);
+            return -ENODEV;
+        }
+        DBG_LOG("###CAMERA DEBUG###:WRITE  AutoAlgEnBits    [0x%04x] \n", write_alg_data);
+        DBG_LOG("###CAMERA DEBUG###:BACKUP AutoAlgEnBits    [0x%04x] \n", camsensor_main_hdr_ctrl_data.autoalg_bit);
+    }
+
+    {
+        uint16_t read_lei_data;
+        read_lei_data = 0;
+        rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client,
+            (struct msm_camera_i2c_reg_conf *)&camsensor_main_manual_exp_read_lei_reg_tbl[0],
+            ARRAY_SIZE(camsensor_main_manual_exp_read_lei_reg_tbl),
+            MSM_CAMERA_I2C_WORD_DATA);
+        if( rc < 0 )
+        {
+            ERR_LOG("%s setting reg msm_camera_i2c_write_tbl error rc:%d\n", __func__,rc);
+            ERR_LOG("%s :X can not manual exposure start\n", __func__);
+            return -ENODEV;
+        }
+
+        rc = msm_camera_i2c_read(s_ctrl->sensor_i2c_client,
+            0x0F12,
+            &read_lei_data,
+            MSM_CAMERA_I2C_WORD_DATA);
+        if( rc < 0 )
+        {
+            ERR_LOG("%s setting reg msm_camera_i2c_read error rc:%d\n", __func__,rc);
+            ERR_LOG("%s :X can not manual exposure start\n", __func__);
+            return -ENODEV;
+        }
+
+        camsensor_main_hdr_ctrl_data.lei_exp_val = read_lei_data;
+        DBG_LOG("###CAMERA DEBUG###: READ ME_LEI_Exp      [0x%04x] \n", read_lei_data);
+
+        rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client,
+            (struct msm_camera_i2c_reg_conf *)&camsensor_main_manual_exp_read_lei_reg_high_tbl[0],
+            ARRAY_SIZE(camsensor_main_manual_exp_read_lei_reg_high_tbl),
+            MSM_CAMERA_I2C_WORD_DATA);
+        if( rc < 0 )
+        {
+            ERR_LOG("%s setting reg msm_camera_i2c_write_tbl error rc:%d\n", __func__,rc);
+            ERR_LOG("%s :X can not manual exposure start\n", __func__);
+            return -ENODEV;
+        }
+
+        rc = msm_camera_i2c_read(s_ctrl->sensor_i2c_client,
+            0x0F12,
+            &read_lei_data,
+            MSM_CAMERA_I2C_WORD_DATA);
+        if( rc < 0 )
+        {
+            ERR_LOG("%s setting reg msm_camera_i2c_read error rc:%d\n", __func__,rc);
+            ERR_LOG("%s :X can not manual exposure start\n", __func__);
+            return -ENODEV;
+        }
+
+        camsensor_main_hdr_ctrl_data.lei_exp_val = (camsensor_main_hdr_ctrl_data.lei_exp_val | ((uint32_t)read_lei_data << 16) );
+        DBG_LOG("###CAMERA DEBUG###: READ ME_LEI_Exp High   [0x%04x] \n", read_lei_data);
+        DBG_LOG("###CAMERA DEBUG###: ME_LEI_Exp High+Low   [0x%08x] \n", camsensor_main_hdr_ctrl_data.lei_exp_val);
+
+    }
+
+    {
+        uint16_t read_tc_no;
+        uint16_t read_frm_data;
+        struct msm_camera_i2c_reg_conf read_tc_tbl[] = {
+            {0x002C,0x2000},
+            {0x002E,0x02A8},
+        };
+        struct msm_camera_i2c_reg_conf read_max_frm_tbl[] = {
+            {0x002C,0x2000},
+            {0x002E,0xDEAD},
+        };
+
+        rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client,
+            (struct msm_camera_i2c_reg_conf *)&read_tc_tbl[0],
+            ARRAY_SIZE(read_tc_tbl),
+            MSM_CAMERA_I2C_WORD_DATA);
+        if( rc < 0 )
+        {
+            ERR_LOG("%s setting reg msm_camera_i2c_write_tbl error rc:%d\n", __func__,rc);
+            ERR_LOG("%s :X can not manual exposure start\n", __func__);
+            return -ENODEV;
+        }
+        rc = msm_camera_i2c_read(s_ctrl->sensor_i2c_client,
+            0x0F12,
+            &read_tc_no,
+            MSM_CAMERA_I2C_WORD_DATA);
+        if( rc < 0 )
+        {
+            ERR_LOG("%s setting reg msm_camera_i2c_read error rc:%d\n", __func__,rc);
+            ERR_LOG("%s :X can not manual exposure start\n", __func__);
+            return -ENODEV;
+        }
+        DBG_LOG("###CAMERA DEBUG###: READ use tc no [0x%04x] \n", read_tc_no);
+
+        switch(read_tc_no){
+            case 0:
+                read_max_frm_tbl[1].reg_data = 0x03F0;
+                break;
+            case 1:
+                read_max_frm_tbl[1].reg_data = 0x041C;
+                break;
+            case 2:
+                read_max_frm_tbl[1].reg_data = 0x0448;
+                break;
+            case 3:
+                read_max_frm_tbl[1].reg_data = 0x0474;
+                break;
+            case 4:
+                read_max_frm_tbl[1].reg_data = 0x04A0;
+                break;
+            default:
+                ERR_LOG("%s read tc no invalid [%d]\n", __func__,read_tc_no);
+                read_max_frm_tbl[1].reg_data = 0x03F0;
+                break;
+        }
+        rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client,
+            (struct msm_camera_i2c_reg_conf *)&read_max_frm_tbl[0],
+            ARRAY_SIZE(read_max_frm_tbl),
+            MSM_CAMERA_I2C_WORD_DATA);
+        if( rc < 0 )
+        {
+            ERR_LOG("%s setting reg msm_camera_i2c_write_tbl error rc:%d\n", __func__,rc);
+            ERR_LOG("%s :X can not manual exposure start\n", __func__);
+            return -ENODEV;
+        }
+        rc = msm_camera_i2c_read(s_ctrl->sensor_i2c_client,
+            0x0F12,
+            &read_frm_data,
+            MSM_CAMERA_I2C_WORD_DATA);
+        if( rc < 0 )
+        {
+            ERR_LOG("%s setting reg msm_camera_i2c_read error rc:%d\n", __func__,rc);
+            ERR_LOG("%s :X can not manual exposure start\n", __func__);
+            return -ENODEV;
+        }
+        camsensor_main_hdr_ctrl_data.max_exp_val = ((uint32_t)read_frm_data*10);
+
+        DBG_LOG("###CAMERA DEBUG###: READ max frm [0x%04x](0.1ms) -> max exp [%04x](0.01ms)\n", read_frm_data,camsensor_main_hdr_ctrl_data.max_exp_val);
+    }
+
+    {
+        uint16_t read_total_gain_data;
+        uint16_t read_again_data;
+        uint16_t read_dgain_data;
+
+        rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client,
+            (struct msm_camera_i2c_reg_conf *)&camsensor_main_manual_exp_read_again_tbl[0],
+            ARRAY_SIZE(camsensor_main_manual_exp_read_again_tbl),
+            MSM_CAMERA_I2C_WORD_DATA);
+        if( rc < 0 )
+        {
+            ERR_LOG("%s setting reg msm_camera_i2c_write_tbl error rc:%d\n", __func__,rc);
+            ERR_LOG("%s :X can not manual exposure start\n", __func__);
+            return -ENODEV;
+        }
+        rc = msm_camera_i2c_read(s_ctrl->sensor_i2c_client,
+            0x0F12,
+            &read_again_data,
+            MSM_CAMERA_I2C_WORD_DATA);
+        if( rc < 0 )
+        {
+            ERR_LOG("%s setting reg msm_camera_i2c_read error rc:%d\n", __func__,rc);
+            ERR_LOG("%s :X can not manual exposure start\n", __func__);
+            return -ENODEV;
+        }
+
+        rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client,
+            (struct msm_camera_i2c_reg_conf *)&camsensor_main_manual_exp_read_dgain_tbl[0],
+            ARRAY_SIZE(camsensor_main_manual_exp_read_dgain_tbl),
+            MSM_CAMERA_I2C_WORD_DATA);
+        if( rc < 0 )
+        {
+            ERR_LOG("%s setting reg msm_camera_i2c_write_tbl error rc:%d\n", __func__,rc);
+            ERR_LOG("%s :X can not manual exposure start\n", __func__);
+            return -ENODEV;
+        }
+        rc = msm_camera_i2c_read(s_ctrl->sensor_i2c_client,
+            0x0F12,
+            &read_dgain_data,
+            MSM_CAMERA_I2C_WORD_DATA);
+        if( rc < 0 )
+        {
+            ERR_LOG("%s setting reg msm_camera_i2c_read error rc:%d\n", __func__,rc);
+            ERR_LOG("%s :X can not manual exposure start\n", __func__);
+            return -ENODEV;
+        }
+
+        rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client,
+            (struct msm_camera_i2c_reg_conf *)&camsensor_main_manual_exp_read_total_gain_tbl[0],
+            ARRAY_SIZE(camsensor_main_manual_exp_read_total_gain_tbl),
+            MSM_CAMERA_I2C_WORD_DATA);
+        if( rc < 0 )
+        {
+            ERR_LOG("%s setting reg msm_camera_i2c_write_tbl error rc:%d\n", __func__,rc);
+            ERR_LOG("%s :X can not manual exposure start\n", __func__);
+            return -ENODEV;
+        }
+        rc = msm_camera_i2c_read(s_ctrl->sensor_i2c_client,
+            0x0F12,
+            &read_total_gain_data,
+            MSM_CAMERA_I2C_WORD_DATA);
+        if( rc < 0 )
+        {
+            ERR_LOG("%s setting reg msm_camera_i2c_read error rc:%d\n", __func__,rc);
+            ERR_LOG("%s :X can not manual exposure start\n", __func__);
+            return -ENODEV;
+        }
+
+        camsensor_main_hdr_ctrl_data.base_gain_val = ((uint32_t)read_again_data) * ((uint32_t)read_dgain_data)/256;
+        DBG_LOG("###CAMERA DEBUG###: READ AGain[0x%04x] DGain[0x%04x]\n", read_again_data,read_dgain_data);
+        DBG_LOG("###CAMERA DEBUG###: READ total gain [0x%04x] \n", read_total_gain_data);
+    }
+
+    camsensor_main_hdr_ctrl_data.manual_exp_start_flag = true;
+
+    API_LOG("%s: X\n",__func__);
+
+    return 0;
+
+}
+int32_t camsensor_main_sensor_stop_manual_exposure(struct msm_sensor_ctrl_t *s_ctrl)
+{
+
+    int32_t rc = 0;
+    uint16_t read_alg_data;
+    uint16_t write_alg_data;
+
+    API_LOG("%s: E\n",__func__);
+
+    if (!camsensor_main_hdr_ctrl_data.manual_exp_start_flag){
+      DBG_LOG("%s: manual exp stoped already\n",__func__);
+      return 0;
+    }
+
+    camsensor_main_hdr_ctrl_data.manual_exp_start_flag = false;
+
+    rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client,
+              (struct msm_camera_i2c_reg_conf *)&camsensor_main_manual_exp_read_alg_reg_tbl[0],
+              ARRAY_SIZE(camsensor_main_manual_exp_read_alg_reg_tbl),
+              MSM_CAMERA_I2C_WORD_DATA);
+    if( rc < 0)
+    {
+        ERR_LOG("%s setting reg msm_camera_i2c_write_tbl error rc:%d\n", __func__,rc);
+        return -ENODEV;
+    }
+
+    rc = msm_camera_i2c_read(s_ctrl->sensor_i2c_client,
+        0x0F12,
+        &read_alg_data,
+        MSM_CAMERA_I2C_WORD_DATA);
+    if( rc < 0)
+    {
+        ERR_LOG("%s setting reg msm_camera_i2c_read error rc:%d\n", __func__,rc);
+        return -ENODEV;
+    }
+    DBG_LOG("###CAMERA DEBUG###:READ  AutoAlgEnBits    [0x%4x] \n", read_alg_data);
+
+    {
+        struct msm_camera_i2c_reg_conf write_alg_reg_tbl[] = {
+            {0x0028,0x2000},
+            {0x002A,0x051C},
+            {0x0F12,0xDEAD},
+        };
+
+        write_alg_data = read_alg_data | (camsensor_main_hdr_ctrl_data.autoalg_bit & AUTOALG_ENBIT_MANUALEXP_MASK);
+        write_alg_reg_tbl[2].reg_data = write_alg_data;
+        rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client,
+                 &write_alg_reg_tbl[0],
+                 ARRAY_SIZE(write_alg_reg_tbl),
+                 MSM_CAMERA_I2C_WORD_DATA);
+        if( rc < 0)
+        {
+            ERR_LOG("%s setting reg msm_camera_i2c_write_tbl error rc:%d\n", __func__,rc);
+            return -ENODEV;
+        }
+
+        DBG_LOG("###CAMERA DEBUG###:WRITE  AutoAlgEnBits    [0x%4x] \n", write_alg_data);
+    }
+
+    API_LOG("%s: X\n",__func__);
+
+    return 0;
+
+}
+
+int32_t camsensor_main_sensor_write_manual_exposure(struct msm_sensor_ctrl_t *s_ctrl,
+		uint32_t manual_exposure_index)
+{
+    int32_t rc = 0;
+    uint32_t write_total_gain_data;
+    uint32_t   gain_cal_factor;
+
+    DBG_LOG("%s: E manual_exposure_index [%d] \n", __func__,manual_exposure_index);
+    if (!camsensor_main_hdr_ctrl_data.manual_exp_start_flag){
+      DBG_LOG("%s: manual exp do not started \n",__func__);
+      return 0;
+    }
+
+#ifdef DBG_LOG_SWITCH
+    {
+        uint16_t read_lei_data;
+        uint16_t read_lei_high_data;
+        uint16_t read_again_data;
+        uint16_t read_dgain_data;
+        uint16_t read_total_gain_data;
+
+        msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client,
+            (struct msm_camera_i2c_reg_conf *)&camsensor_main_manual_exp_read_lei_reg_tbl[0],
+            ARRAY_SIZE(camsensor_main_manual_exp_read_lei_reg_tbl),
+            MSM_CAMERA_I2C_WORD_DATA);
+        msm_camera_i2c_read(s_ctrl->sensor_i2c_client,
+            0x0F12,
+            &read_lei_data,
+            MSM_CAMERA_I2C_WORD_DATA);
+
+        msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client,
+            (struct msm_camera_i2c_reg_conf *)&camsensor_main_manual_exp_read_lei_reg_high_tbl[0],
+            ARRAY_SIZE(camsensor_main_manual_exp_read_lei_reg_high_tbl),
+            MSM_CAMERA_I2C_WORD_DATA);
+        msm_camera_i2c_read(s_ctrl->sensor_i2c_client,
+            0x0F12,
+            &read_lei_high_data,
+            MSM_CAMERA_I2C_WORD_DATA);
+
+        msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client,
+            (struct msm_camera_i2c_reg_conf *)&camsensor_main_manual_exp_read_again_tbl[0],
+            ARRAY_SIZE(camsensor_main_manual_exp_read_again_tbl),
+            MSM_CAMERA_I2C_WORD_DATA);
+        msm_camera_i2c_read(s_ctrl->sensor_i2c_client,
+            0x0F12,
+            &read_again_data,
+            MSM_CAMERA_I2C_WORD_DATA);
+
+        msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client,
+            (struct msm_camera_i2c_reg_conf *)&camsensor_main_manual_exp_read_dgain_tbl[0],
+            ARRAY_SIZE(camsensor_main_manual_exp_read_dgain_tbl),
+            MSM_CAMERA_I2C_WORD_DATA);
+        msm_camera_i2c_read(s_ctrl->sensor_i2c_client,
+            0x0F12,
+            &read_dgain_data,
+            MSM_CAMERA_I2C_WORD_DATA);
+
+        msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client,
+            (struct msm_camera_i2c_reg_conf *)&camsensor_main_manual_exp_read_total_gain_tbl[0],
+            ARRAY_SIZE(camsensor_main_manual_exp_read_total_gain_tbl),
+            MSM_CAMERA_I2C_WORD_DATA);
+        msm_camera_i2c_read(s_ctrl->sensor_i2c_client,
+            0x0F12,
+            &read_total_gain_data,
+            MSM_CAMERA_I2C_WORD_DATA);
+        DBG_LOG("###CAMERA DEBUG###: read ME_LEI_Exp      [0x%4x] \n", read_lei_data);
+        DBG_LOG("###CAMERA DEBUG###: read ME_LEI_Exp_High [0x%4x] \n", read_lei_high_data);
+        DBG_LOG("###CAMERA DEBUG###: read ME_AGain        [0x%4x] \n", read_again_data);
+        DBG_LOG("###CAMERA DEBUG###: read ME_DGain        [0x%4x] \n", read_dgain_data);
+        DBG_LOG("###CAMERA DEBUG###: read TotalGain       [0x%4x] \n", read_total_gain_data);
+    }
+#endif
+
+    {
+        uint32_t base_lei_data;
+        uint32_t cal_exp;
+        uint16_t cal_exp_low;
+        uint16_t cal_exp_high;
+
+        struct msm_camera_i2c_reg_conf write_manual_exposure_reg[] =
+        {
+          {0x0028,0x2000},
+          {0x002A,0x04E8},
+          {0x0F12,0xDEAD},
+          {0x0F12,0xDEAD},
+          {0x002A,0x04EC},
+          {0x0F12,0x0001},
+        };
+
+        base_lei_data = camsensor_main_hdr_ctrl_data.lei_exp_val;
+        switch ( manual_exposure_index ){
+            case 0:
+                cal_exp_low = (uint16_t)(base_lei_data/16);
+                cal_exp_high = (uint16_t)((base_lei_data/16)>>16);
+                break;
+            case 1:
+                cal_exp_low = (uint16_t)(base_lei_data/8);
+                cal_exp_high = (uint16_t)((base_lei_data/8)>>16);
+                break;
+            case 2:
+                cal_exp_low = (uint16_t)(base_lei_data/4);
+                cal_exp_high = (uint16_t)((base_lei_data/4)>>16);
+                break;
+            case 3:
+                cal_exp_low = (uint16_t)(base_lei_data/2);
+                cal_exp_high = (uint16_t)((base_lei_data/2)>>16);
+                break;
+            case 4:
+                cal_exp_low = (uint16_t)(base_lei_data);
+                cal_exp_high = (uint16_t)((base_lei_data)>>16);
+                break;
+            default:
+                ERR_LOG("%s Err manual exp index :[%d] \n", __func__,manual_exposure_index);
+                cal_exp_low = (uint16_t)(base_lei_data/4);
+                cal_exp_high = (uint16_t)((base_lei_data/4)>>16);
+                break;
+        }
+        cal_exp = (uint32_t)cal_exp_low | ((uint32_t)cal_exp_high<<16);
+
+        gain_cal_factor = 1*10000;
+        if (cal_exp >= camsensor_main_hdr_ctrl_data.max_exp_val) {
+            gain_cal_factor = (cal_exp*10000) / ( (camsensor_main_hdr_ctrl_data.max_exp_val == 0) ? 1:camsensor_main_hdr_ctrl_data.max_exp_val);
+            cal_exp_low = (uint16_t)camsensor_main_hdr_ctrl_data.max_exp_val;
+            cal_exp_high = (uint16_t)(camsensor_main_hdr_ctrl_data.max_exp_val>>16);
+            write_manual_exposure_reg[2].reg_data = cal_exp_low;
+            write_manual_exposure_reg[3].reg_data = cal_exp_high;
+            DBG_LOG("###CAMERA DEBUG###: over max exp [0x%08x] <= target exp[0x%08x](base Lei*EvFact)\n",
+                camsensor_main_hdr_ctrl_data.max_exp_val,
+                cal_exp);
+            DBG_LOG("###CAMERA DEBUG###: write exp [0x%08x] \n",(((uint32_t)cal_exp_low)|(((uint32_t)cal_exp_high)<<16)));
+
+            DBG_LOG("###CAMERA DEBUG###: gain_factor [0x%08x](1.0=10000) = (target exp[0x%08x] * 10000) / max exp [0x%08x] \n",
+                gain_cal_factor,
+                cal_exp,
+                camsensor_main_hdr_ctrl_data.max_exp_val
+                );
+
+        }else{
+            write_manual_exposure_reg[2].reg_data = cal_exp_low;
+            write_manual_exposure_reg[3].reg_data = cal_exp_high;
+
+            DBG_LOG("###CAMERA DEBUG###: under max exp [0x%08x] > target exp[0x%08x]\n",
+                camsensor_main_hdr_ctrl_data.max_exp_val,
+                cal_exp);
+
+            DBG_LOG("###CAMERA DEBUG###: write exp [0x%08x] \n",cal_exp);
+            DBG_LOG("###CAMERA DEBUG###: gain_factor [0x%08x](1.0=10000) = 1.0 * 10000 \n",
+                gain_cal_factor);
+        }
+
+        rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client,
+                 &write_manual_exposure_reg[0],
+                 ARRAY_SIZE(write_manual_exposure_reg),
+                 MSM_CAMERA_I2C_WORD_DATA);
+        if( rc < 0)
+        {
+            ERR_LOG("%s manual expreg msm_camera_i2c_write_tbl error rc:%d\n", __func__,rc);
+            return -ENODEV;
+        }
+
+#ifdef DBG_LOG_SWITCH
+        {
+            int32_t cnt;
+            for(cnt = 0; cnt < ARRAY_SIZE(write_manual_exposure_reg); cnt++)
+            {
+                DBG_LOG("###CAMERA DEBUG###: manual exp write reg_addr0[0x%4x] reg_data0[0x%4x]\n", write_manual_exposure_reg[cnt].reg_addr,write_manual_exposure_reg[cnt].reg_data);
+            }
+        }
+#endif
+    }
+
+    if (camsensor_main_drv_ctrl->iso_mode != CAMERA_ISO_TYPE_AUTO) {
+        DBG_LOG("%s: X Not gain setting. fact manual iso[%d]\n", __func__,camsensor_main_drv_ctrl->iso_mode);
+        return 0;
+    }
+
+    {
+        uint32_t cal_gain;
+
+        struct msm_camera_i2c_reg_conf write_total_gain_tbl[] = {
+            {0x0028,0x2000},
+            {0x002A,0x04EE},
+            {0x0F12,0xDEAD},
+            {0x0F12,0x0001},
+        };
+
+        cal_gain = (gain_cal_factor*camsensor_main_hdr_ctrl_data.base_gain_val)/10000;
+        write_total_gain_data = cal_gain;
+        DBG_LOG("###CAMERA DEBUG###: write gain[0x%08x] = (base gain[0x%08x]  * gain fact[0x%08x])/10000 \n",
+            write_total_gain_data,
+            camsensor_main_hdr_ctrl_data.base_gain_val,
+            gain_cal_factor
+            );
+
+        write_total_gain_tbl[2].reg_data = (uint16_t)write_total_gain_data;
+        rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client,
+            (struct msm_camera_i2c_reg_conf *)&write_total_gain_tbl[0],
+            ARRAY_SIZE(write_total_gain_tbl),
+            MSM_CAMERA_I2C_WORD_DATA);
+        if( rc < 0)
+        {
+            ERR_LOG("%s manual expreg msm_camera_i2c_write_tbl error rc:%d\n", __func__,rc);
+            return -ENODEV;
+        }
+
+#ifdef DBG_LOG_SWITCH
+        {
+            int32_t cnt;
+            for(cnt = 0; cnt < ARRAY_SIZE(write_total_gain_tbl); cnt++)
+            {
+                DBG_LOG("###CAMERA DEBUG###: total gain write reg_addr0[0x%4x] reg_data0[0x%4x]\n", write_total_gain_tbl[cnt].reg_addr,write_total_gain_tbl[cnt].reg_data);
+            }
+        }
+#endif
+    }
+
+    DBG_LOG("%s: X \n", __func__);
+	return 0;
+}
+
+#define CAF_TAKEPICTURE_STATUS_FOCUS_COMPLETE (0)
+
+static const struct msm_camera_i2c_reg_conf camsensor_main_caf_status_read_reg_tbl[] = {
+    {0x002C,0x2000},
+    {0x002E,0x241F},
+};
+
+static int32_t camsensor_main_sensor_read_caf_status(struct msm_sensor_ctrl_t *s_ctrl,uint16_t *read_data)
+{
+    int32_t rc = 0;
+
+    rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client,
+              (struct msm_camera_i2c_reg_conf *)&camsensor_main_caf_status_read_reg_tbl[0],
+              ARRAY_SIZE(camsensor_main_caf_status_read_reg_tbl),
+              MSM_CAMERA_I2C_WORD_DATA);
+    if( rc < 0)
+    {
+        ERR_LOG("%s setting reg msm_camera_i2c_write_tbl error rc:%d\n", __func__,rc);
+        return -ENODEV;
+    }
+
+    rc = msm_camera_i2c_read(s_ctrl->sensor_i2c_client,
+        0x0F12,
+        read_data,
+        MSM_CAMERA_I2C_WORD_DATA);
+    if( rc < 0)
+    {
+        ERR_LOG("%s setting reg msm_camera_i2c_read error rc:%d\n", __func__,rc);
+        return -ENODEV;
+    }
+
+    return 0;
+
+}
+int32_t camsensor_main_sensor_start_caf_takepicture(struct msm_sensor_ctrl_t *s_ctrl)
+{
+
+    int32_t rc = 0;
+    uint16_t read_data = 0xDEAD;
+    API_LOG("%s: E\n",__func__);
+
+    rc = camsensor_main_sensor_read_caf_status(s_ctrl,&read_data);
+    DBG_LOG("###CAMERA DEBUG###:READ  CAF Status [0x%4x] \n", read_data);
+    if( rc < 0)
+    {
+        ERR_LOG("%s setting reg msm_camera_i2c_read error rc:%d\n", __func__,rc);
+        return -ENODEV;
+    }
+    if (read_data == CAF_TAKEPICTURE_STATUS_FOCUS_COMPLETE) {
+
+        struct msm_camera_i2c_reg_conf write_lock_caf_reg[] =
+        {
+          {0x0028,0x2000},
+          {0x002A,0x02CA},
+          {0x0F12,0x0000},
+          {0x002A,0x02C8},
+          {0x0F12,0x0001},
+        };
+
+        rc = msm_camera_i2c_write_tbl(s_ctrl->sensor_i2c_client,
+                 &write_lock_caf_reg[0],
+                 ARRAY_SIZE(write_lock_caf_reg),
+                 MSM_CAMERA_I2C_WORD_DATA);
+        if( rc < 0)
+        {
+            ERR_LOG("%s disable Caf msm_camera_i2c_write_tbl error rc:%d\n", __func__,rc);
+
+            return 0;
+        }
+
+        API_LOG("%s: X\n",__func__);
+        return 0;
+    }
+
+    API_LOG("%s: X need focus complete cb\n",__func__);
+
+    return -ENODEV;
+
+}
+
+static const struct i2c_device_id camsensor_main_i2c_id[] = {
+	{PLATFORM_DRIVER_NAME, (kernel_ulong_t)&camsensor_main_s_ctrl},
+	{ }
+};
+
+static struct i2c_driver camsensor_main_i2c_driver = {
+	.id_table = camsensor_main_i2c_id,
+	.probe  = camsensor_main_i2c_probe,
+	.driver = {
+		.name = SENSOR_NAME,
+	},
+};
+
+static struct msm_camera_i2c_client camsensor_main_sensor_i2c_client = {
+	.addr_type = MSM_CAMERA_I2C_WORD_ADDR,
+};
+
+static int __init msm_sensor_init_module(void)
+{
+	return i2c_add_driver(&camsensor_main_i2c_driver);
+}
+
+static struct v4l2_subdev_core_ops camsensor_main_subdev_core_ops = {
+	.ioctl = msm_sensor_subdev_ioctl,
+	.s_power = msm_sensor_power,
+};
+
+static struct v4l2_subdev_video_ops camsensor_main_subdev_video_ops = {
+	.enum_mbus_fmt = msm_sensor_v4l2_enum_fmt,
+};
+
+static struct v4l2_subdev_ops camsensor_main_subdev_ops = {
+	.core = &camsensor_main_subdev_core_ops,
+	.video  = &camsensor_main_subdev_video_ops,
+};
+
+static struct msm_sensor_fn_t camsensor_main_func_tbl = {
+	.sensor_start_stream = camsensor_main_start_stream,
+	.sensor_stop_stream = camsensor_main_stop_stream,
+	.sensor_group_hold_on = msm_sensor_group_hold_on,
+	.sensor_group_hold_off = msm_sensor_group_hold_off,
+	.sensor_set_fps = msm_sensor_set_fps,
+	.sensor_setting = camsensor_main_setting,
+	.sensor_csi_setting = camsensor_main_setting1,
+	.sensor_set_sensor_mode = msm_sensor_set_sensor_mode,
+	.sensor_mode_init = camsensor_main_sensor_mode_init,
+	.sensor_get_output_info = msm_sensor_get_output_info,
+	.sensor_config = msm_sensor_config,
+	.sensor_power_up = camsensor_main_sensor_power_up,
+	.sensor_power_down = camsensor_main_sensor_power_down,
+	.sensor_get_csi_params = msm_sensor_get_csi_params,
+
+	.sensor_set_manual_iso = camsensor_main_sensor_set_iso,
+	.sensor_set_ae_mode = camsensor_main_sensor_set_ae_mode,
+	.sensor_set_white_balance = camsensor_main_sensor_set_white_balance,
+	.sensor_set_scene_mode = camsensor_main_sensor_set_scene_mode,
+
+	.sensor_get_exif_info = camsensor_main_sensor_get_exif_info,
+
+	.sensor_set_focus_mode = camsensor_main_sensor_set_focus_mode,
+
+	.sensor_get_flash_info = camsensor_main_sensor_get_flash_info,
+	.sensor_get_ae_awb_stable_info = camsensor_main_sensor_get_ae_awb_stable_info,
+
+    .sensor_write_manual_exposure = camsensor_main_sensor_write_manual_exposure,
+    .sensor_start_manual_exposure = camsensor_main_sensor_start_manual_exposure,
+    .sensor_stop_manual_exposure = camsensor_main_sensor_stop_manual_exposure,
+
+	.sensor_set_flash_reg = camsensor_main_sensor_set_flash_reg,
+
+	.sensor_set_roi_af_area_info = camsensor_main_sensor_set_roi_af_mode,
+	.sensor_set_roi_ae_area_info = camsensor_main_sensor_set_roi_ae_mode,
+
+    .sensor_cancel_focus = camsensor_main_sensor_cancel_focus,
+
+    .sensor_start_caf_takepicture = camsensor_main_sensor_start_caf_takepicture,
+
+};
+
+static struct msm_sensor_reg_t camsensor_main_regs = {
+	.default_data_type = MSM_CAMERA_I2C_WORD_DATA,
+	.start_stream_conf = camsensor_main_start_settings,
+	.start_stream_conf_size = ARRAY_SIZE(camsensor_main_start_settings),
+	.stop_stream_conf = camsensor_main_stop_settings,
+	.stop_stream_conf_size = ARRAY_SIZE(camsensor_main_stop_settings),
+	.group_hold_on_conf = camsensor_main_groupon_settings,
+	.group_hold_on_conf_size = ARRAY_SIZE(camsensor_main_groupon_settings),
+	.group_hold_off_conf = camsensor_main_groupoff_settings,
+	.group_hold_off_conf_size =
+		ARRAY_SIZE(camsensor_main_groupoff_settings),
+	.init_settings = &camsensor_main_init_conf[0],
+	.init_size = ARRAY_SIZE(camsensor_main_init_conf),
+	.mode_settings = &camsensor_main_confs[0],
+	.output_settings = &camsensor_main_dimensions[0],
+	.num_conf = ARRAY_SIZE(camsensor_main_confs),
+};
+
+static struct msm_sensor_ctrl_t camsensor_main_s_ctrl = {
+	.msm_sensor_reg = &camsensor_main_regs,
+	.sensor_i2c_client = &camsensor_main_sensor_i2c_client,
+	.sensor_i2c_addr = 0x5A,
+	.sensor_output_reg_addr = &camsensor_main_reg_addr,
+	.sensor_id_info = &camsensor_main_id_info,
+	.sensor_exp_gain_info = &camsensor_main_exp_gain_info,
+	.cam_mode = MSM_SENSOR_MODE_INVALID,
+	.msm_sensor_mutex = &camsensor_main_mut,
+	.sensor_i2c_driver = &camsensor_main_i2c_driver,
+	.sensor_v4l2_subdev_info = camsensor_main_subdev_info,
+	.sensor_v4l2_subdev_info_size = ARRAY_SIZE(camsensor_main_subdev_info),
+	.sensor_v4l2_subdev_ops = &camsensor_main_subdev_ops,
+	.func_tbl = &camsensor_main_func_tbl,
+	.clk_rate = MSM_SENSOR_MCLK_24HZ,
+};
+
+module_init(msm_sensor_init_module);
+MODULE_DESCRIPTION("Samsung 5MP YUV sensor driver");
+MODULE_LICENSE("GPL v2");
+

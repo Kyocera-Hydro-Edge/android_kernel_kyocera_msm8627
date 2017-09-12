@@ -49,10 +49,10 @@
 #ifdef QUALCOMM_ORIGINAL_FEATURE
 #else
 #include <linux/android_alarm.h>
-#include <pm8921_oem_hkadc.h>
+#include "pm8921_oem_hkadc.h"
 #include <linux/earlysuspend.h>
 #include <linux/wakelock.h>
-#include <pm8921-charger_oem.h>
+#include "pm8921-charger_oem.h"
 #include <mach/oem_fact.h>
 #include <linux/reboot.h>
 #include <linux/gpio.h>

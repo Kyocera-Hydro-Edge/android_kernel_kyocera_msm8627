@@ -43,7 +43,7 @@
 #include <linux/string.h>
 #include <linux/uaccess.h>
 #include <linux/reboot.h>
-#include <pm8921-charger_oem.h>
+#include "pm8921-charger_oem.h"
 #include <linux/mfd/pm8xxx/batt-alarm.h>
 #endif
 #define BMS_CONTROL		0x224

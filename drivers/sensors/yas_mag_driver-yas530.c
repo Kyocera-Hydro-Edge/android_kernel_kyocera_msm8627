@@ -1097,7 +1097,7 @@ static int
 yas_cdrv_init(const int8_t *transform, struct yas_machdep_func *func)
 {
 	int interval, i;
-	uint8_t id;
+	uint8_t id=0;
 
 	if (transform == NULL || func == NULL)
 		return YAS_ERROR_ARG;
@@ -1152,6 +1152,7 @@ yas_cdrv_init(const int8_t *transform, struct yas_machdep_func *func)
 	default:
 		return YAS_ERROR_DEVICE_COMMUNICATION;
 	}
+
 	cdriver.dev_id = id;
 	YLOGD(("%s %s\n",
 				cdriver.dev_id == YAS_YAS532_DEVICE_ID
